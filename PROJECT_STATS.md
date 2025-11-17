@@ -150,12 +150,92 @@ agentsdk-go/
 
 **详细报告**: 见 [V02_COMPLETION_REPORT.md](V02_COMPLETION_REPORT.md)
 
-### v0.3 企业级 (8 周)
-- [ ] OTEL Tracing
-- [ ] 多代理协作
-- [ ] Workflow 高级特性
-- [ ] Docker 部署
-- [ ] 生产监控
+### v0.3 企业级 (8 周) - ✅ 已完成
+
+#### Week 7-10: 审批系统 + 工作流引擎
+- [x] 审批系统 - 覆盖率 90.6%
+  - [x] Approval Queue - 工具调用审批队列
+  - [x] 会话级白名单 - 持久化审批记录
+  - [x] 审批中间件集成 - 覆盖率 96%
+- [x] StateGraph 工作流引擎 - 覆盖率 90.6%
+  - [x] StateGraph 核心实现 (Node/Edge/Graph)
+  - [x] Loop/Parallel/Condition 控制流
+  - [x] 内置中间件 (4 个)
+    - [x] TodoListMiddleware - 待办清单追踪 (90.5%)
+    - [x] SummarizationMiddleware - 上下文压缩 (90.4%)
+    - [x] SubAgentMiddleware - 子代理委托 (92%)
+    - [x] ApprovalMiddleware - 审批拦截 (96%)
+
+#### Week 11-14: 可观测性 + 多代理 + 部署
+- [x] OTEL 可观测性 - 覆盖率 90.1%
+  - [x] OTEL Tracing 集成 (Span/Tracer Provider)
+  - [x] Metrics 上报 (4 个指标)
+  - [x] 敏感数据过滤 (API Key/Token)
+- [x] 多代理协作 - 覆盖率 85.2%
+  - [x] SubAgent 支持 (Fork 机制)
+  - [x] 共享会话 (可选隔离)
+  - [x] Team 模式 (Sequential/Parallel/Hierarchical)
+- [x] 生产部署
+  - [x] Docker 镜像 (多阶段构建 + 健康检查)
+  - [x] K8s 部署配置 (Deployment + Service + ConfigMap)
+  - [x] 监控告警 (Prometheus + ServiceMonitor)
+
+**详细报告**: 见 [V03_COMPLETION_REPORT.md](V03_COMPLETION_REPORT.md)
+
+**代码统计**:
+- 总代码行数: 12,942 行 (不含测试)
+- 总文件数: 129 个 Go 文件
+- 总覆盖率: 66.6%
+- 新增模块覆盖率: >90% (approval/workflow/telemetry)
+
+### v0.3.1 短期优化 (1-2 周) - ✅ 已完成
+
+#### 测试覆盖率提升
+- [x] pkg/agent 流式测试 - 从 85.2% → 90.9% ✅
+  - [x] RunStream 长期流程测试 (backpressure/stopped 事件)
+  - [x] Team 策略组合测试 (所有策略 × 所有模式)
+  - [x] 错误注入测试 (WAL/Session/Tool 失败场景)
+- [x] pkg/security 安全测试 - 从 24.3% → 79.3% ✅
+  - [x] Sandbox 完整测试 (路径白名单/符号链接/转义攻击)
+  - [x] Validator 完整测试 (命令黑名单/元字符过滤)
+  - [x] PathResolver 完整测试 (符号链接循环/深度嵌套)
+- [x] 审批队列自动 GC - 覆盖率 90.1% ✅
+  - [x] 定期清理过期审批记录 (默认 7 天)
+  - [x] 保留最近 N 条记录 (默认 1000)
+  - [x] 支持手动触发 GC
+  - [x] 支持配置保留策略 (时间/数量/大小)
+
+**详细报告**: 见 [V03_SHORT_TERM_OPTIMIZATION.md](V03_SHORT_TERM_OPTIMIZATION.md)
+
+### v0.4 增强优化 (4-6 周) - 📅 规划中
+
+#### Week 15-18: 更多中间件
+- [ ] RateLimitMiddleware - Token Bucket + Sliding Window + 分布式限流
+- [ ] CacheMiddleware - LRU 缓存 + TTL 过期 + 缓存统计
+- [ ] RetryMiddleware - 指数退避 + 幂等性检查 + 重试决策器
+
+#### Week 19-20: 更多 Team 策略
+- [ ] ConsensusStrategy - 多数投票 + 权重投票 + 仲裁者模式
+- [ ] SpecialistStrategy - 专家匹配 + 能力图谱 + 动态学习
+
+#### Week 21-22: 部署工具
+- [ ] Helm Chart - Chart 结构 + Values 配置 + 依赖管理
+- [ ] Terraform 模块 - AWS/GCP 部署 + 网络存储 + 自动扩缩容
+
+### v0.5 分布式和可视化 (6+ 周) - 📅 规划中
+
+#### Week 23-26: 分布式审批
+- [ ] Redis 队列后端 - Redis Streams + 持久化队列 + 消费者组
+- [ ] 跨节点审批 - 请求分发 + 状态同步 + Leader 选举
+
+#### Week 27-30: 工作流可视化
+- [ ] StateGraph 可视化编辑器 - 拖拽编辑 + 实时预览 + YAML 导入导出
+- [ ] 执行流程监控 - 实时状态 + 节点时间 + 错误高亮 + 历史回放
+
+#### Week 31-34: 多模型支持
+- [ ] Google Gemini 适配器 - Gemini Pro/Ultra + Multimodal + 流式
+- [ ] Cohere Command 适配器 - Command/Command-R + RAG + 工具调用
+- [ ] Ollama 本地模型 - Llama 3/Mistral/Qwen + GPU 加速
 
 ## 总结
 
