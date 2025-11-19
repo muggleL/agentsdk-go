@@ -23,9 +23,33 @@ type httpServer struct {
 	runtime        *api.Runtime
 	mode           api.ModeContext
 	defaultTimeout time.Duration
+	staticDir      string
 }
 
 func (s *httpServer) registerRoutes(mux *http.ServeMux) {
+	// 静态站点入口跳转，保证根路径访问统一落到 /static/
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			s.writeJSON(w, http.StatusMethodNotAllowed, errorResponse{"only GET supported"})
+			return
+		}
+		http.Redirect(w, r, "/static/", http.StatusTemporaryRedirect)
+	})
+
+	// 静态文件目录，仅允许 GET 访问
+	staticHandler := http.StripPrefix("/static/", http.FileServer(http.Dir(s.staticDir)))
+	mux.HandleFunc("/static/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			s.writeJSON(w, http.StatusMethodNotAllowed, errorResponse{"only GET supported"})
+			return
+		}
+		staticHandler.ServeHTTP(w, r)
+	})
+
 	mux.HandleFunc("/healthz", s.handleHealth)
 	mux.HandleFunc("/v1/run", s.handleRun)
 	mux.HandleFunc("/v1/run/stream", s.handleStream)
@@ -253,4 +277,3 @@ func copyAnyMap(in map[string]any) map[string]any {
 	}
 	return out
 }
-
