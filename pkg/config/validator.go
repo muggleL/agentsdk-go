@@ -3,180 +3,309 @@ package config
 import (
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
-
-	"github.com/cexll/agentsdk-go/pkg/plugins"
 )
 
-// Validator enforces constraints on ProjectConfig.
-type Validator interface {
-	Validate(*ProjectConfig) error
+var (
+	toolNamePattern      = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
+	pluginSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+)
+
+// ValidateSettings checks the merged Settings structure for logical consistency.
+// Aggregates all failures using errors.Join so callers can surface every issue at once.
+func ValidateSettings(s *Settings) error {
+	if s == nil {
+		return errors.New("settings is nil")
+	}
+
+	var errs []error
+
+	// model
+	if strings.TrimSpace(s.Model) == "" {
+		errs = append(errs, errors.New("model is required"))
+	}
+
+	// permissions
+	errs = append(errs, validatePermissionsConfig(s.Permissions)...)
+
+	// hooks
+	errs = append(errs, validateHooksConfig(s.Hooks)...)
+
+	// sandbox
+	errs = append(errs, validateSandboxConfig(s.Sandbox)...)
+
+	// plugins & marketplaces
+	errs = append(errs, validatePluginsConfig(s.EnabledPlugins, s.ExtraKnownMarketplaces)...)
+
+	// status line
+	errs = append(errs, validateStatusLineConfig(s.StatusLine)...)
+
+	// force login options
+	errs = append(errs, validateForceLoginConfig(s.ForceLoginMethod, s.ForceLoginOrgUUID)...)
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
-// DefaultValidator applies structural checks and guards against obvious abuse.
-type DefaultValidator struct {
-	root       string
-	maxPlugins int
-	maxEnvVars int
+func validatePermissionsConfig(p *PermissionsConfig) []error {
+	if p == nil {
+		return nil
+	}
+	var errs []error
+
+	mode := strings.TrimSpace(p.DefaultMode)
+	switch mode {
+	case "askBeforeRunningTools", "acceptReadOnly", "acceptEdits", "bypassPermissions":
+	case "":
+		errs = append(errs, errors.New("permissions.defaultMode is required"))
+	default:
+		errs = append(errs, fmt.Errorf("permissions.defaultMode %q is not supported", mode))
+	}
+
+	if p.DisableBypassPermissionsMode != "" && p.DisableBypassPermissionsMode != "disable" {
+		errs = append(errs, fmt.Errorf("permissions.disableBypassPermissionsMode must be \"disable\", got %q", p.DisableBypassPermissionsMode))
+	}
+
+	errs = append(errs, validateRuleSlice("permissions.allow", p.Allow)...)
+	errs = append(errs, validateRuleSlice("permissions.ask", p.Ask)...)
+	errs = append(errs, validateRuleSlice("permissions.deny", p.Deny)...)
+
+	for i, dir := range p.AdditionalDirectories {
+		if strings.TrimSpace(dir) == "" {
+			errs = append(errs, fmt.Errorf("permissions.additionalDirectories[%d] is empty", i))
+		}
+	}
+
+	return errs
 }
 
-// NewDefaultValidator builds a validator anchored to the provided project root.
-func NewDefaultValidator(root string) *DefaultValidator {
-	if root == "" {
-		root = "."
+func validateRuleSlice(label string, rules []string) []error {
+	var errs []error
+	for i, rule := range rules {
+		if err := validatePermissionRule(rule); err != nil {
+			errs = append(errs, fmt.Errorf("%s[%d]: %w", label, i, err))
+		}
 	}
-	abs, err := filepath.Abs(root)
-	if err != nil {
-		abs = root
+	return errs
+}
+
+// validatePermissionRule enforces the Tool(target) pattern used by allow/ask/deny.
+func validatePermissionRule(rule string) error {
+	rule = strings.TrimSpace(rule)
+	if rule == "" {
+		return errors.New("permission rule is empty")
 	}
-	return &DefaultValidator{
-		root:       abs,
-		maxPlugins: 64,
-		maxEnvVars: 64,
+	if !strings.HasSuffix(rule, ")") {
+		return fmt.Errorf("permission rule %q must end with )", rule)
+	}
+	if strings.Count(rule, "(") != 1 || strings.Count(rule, ")") != 1 {
+		return fmt.Errorf("permission rule %q must look like Tool(pattern)", rule)
+	}
+	open := strings.IndexRune(rule, '(')
+	tool := rule[:open]
+	target := rule[open+1 : len(rule)-1]
+	if err := validateToolName(tool); err != nil {
+		return fmt.Errorf("invalid tool name: %w", err)
+	}
+	if strings.TrimSpace(target) == "" {
+		return fmt.Errorf("permission rule %q target is empty", rule)
+	}
+	return nil
+}
+
+// validateToolName ensures hooks and permission prefixes use a predictable charset.
+func validateToolName(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("tool name is empty")
+	}
+	if !toolNamePattern.MatchString(name) {
+		return fmt.Errorf("tool name %q must match %s", name, toolNamePattern.String())
+	}
+	return nil
+}
+
+func validateHooksConfig(h *HooksConfig) []error {
+	if h == nil {
+		return nil
+	}
+	var errs []error
+	errs = append(errs, validateHookMap("hooks.preToolUse", h.PreToolUse)...)
+	errs = append(errs, validateHookMap("hooks.postToolUse", h.PostToolUse)...)
+	return errs
+}
+
+func validateHookMap(label string, hooks map[string]string) []error {
+	if len(hooks) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(hooks))
+	for k := range hooks {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var errs []error
+	for _, tool := range keys {
+		cmd := hooks[tool]
+		if err := validateToolName(tool); err != nil {
+			errs = append(errs, fmt.Errorf("%s[%s]: %w", label, tool, err))
+		}
+		if strings.TrimSpace(cmd) == "" {
+			errs = append(errs, fmt.Errorf("%s[%s]: command is empty", label, tool))
+		}
+	}
+	return errs
+}
+
+func validateSandboxConfig(s *SandboxConfig) []error {
+	if s == nil {
+		return nil
+	}
+	var errs []error
+	for i, cmd := range s.ExcludedCommands {
+		if strings.TrimSpace(cmd) == "" {
+			errs = append(errs, fmt.Errorf("sandbox.excludedCommands[%d] is empty", i))
+		}
+	}
+	if s.Network != nil {
+		if s.Network.HTTPProxyPort != nil {
+			if err := validatePortRange(*s.Network.HTTPProxyPort); err != nil {
+				errs = append(errs, fmt.Errorf("sandbox.network.httpProxyPort: %w", err))
+			}
+		}
+		if s.Network.SocksProxyPort != nil {
+			if err := validatePortRange(*s.Network.SocksProxyPort); err != nil {
+				errs = append(errs, fmt.Errorf("sandbox.network.socksProxyPort: %w", err))
+			}
+		}
+	}
+	return errs
+}
+
+// validatePortRange expects a TCP/UDP port in the inclusive 1-65535 range.
+func validatePortRange(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("port %d out of range (1-65535)", port)
+	}
+	return nil
+}
+
+func validatePluginsConfig(enabled map[string]bool, marketplaces map[string]MarketplaceSource) []error {
+	var errs []error
+	if len(enabled) > 0 {
+		keys := make([]string, 0, len(enabled))
+		for k := range enabled {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if err := validatePluginKey(key); err != nil {
+				errs = append(errs, fmt.Errorf("enabledPlugins[%s]: %w", key, err))
+			}
+		}
+	}
+	if len(marketplaces) > 0 {
+		names := make([]string, 0, len(marketplaces))
+		for name := range marketplaces {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			src := marketplaces[name]
+			if err := validateMarketplaceSource(&src); err != nil {
+				errs = append(errs, fmt.Errorf("extraKnownMarketplaces[%s]: %w", name, err))
+			}
+		}
+	}
+	return errs
+}
+
+// validatePluginKey enforces the plugin-name@marketplace-name syntax.
+func validatePluginKey(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("plugin key is empty")
+	}
+	parts := strings.Split(key, "@")
+	if len(parts) != 2 {
+		return fmt.Errorf("plugin key %q must be formatted as plugin@marketplace", key)
+	}
+	plugin, market := parts[0], parts[1]
+	if plugin == "" || market == "" {
+		return fmt.Errorf("plugin key %q must include non-empty plugin and marketplace", key)
+	}
+	if !pluginSegmentPattern.MatchString(plugin) {
+		return fmt.Errorf("plugin segment %q has invalid characters", plugin)
+	}
+	if !pluginSegmentPattern.MatchString(market) {
+		return fmt.Errorf("marketplace segment %q has invalid characters", market)
+	}
+	return nil
+}
+
+// validateMarketplaceSource validates marketplace source type only, as requested.
+func validateMarketplaceSource(source *MarketplaceSource) error {
+	if source == nil {
+		return errors.New("marketplace source is nil")
+	}
+	switch source.Source {
+	case "github", "git", "directory":
+		return nil
+	case "":
+		return errors.New("marketplace source is empty")
+	default:
+		return fmt.Errorf("unsupported marketplace source %q", source.Source)
 	}
 }
 
-// Validate checks structural integrity, rollback behaviour, and sandbox safety.
-func (v *DefaultValidator) Validate(cfg *ProjectConfig) error {
+func validateStatusLineConfig(cfg *StatusLineConfig) []error {
 	if cfg == nil {
-		return errors.New("config is nil")
+		return nil
 	}
-	if strings.TrimSpace(cfg.Version) == "" {
-		return errors.New("config version is required")
-	}
-	if !plugins.IsSemVer(cfg.Version) {
-		return fmt.Errorf("invalid config version %q", cfg.Version)
-	}
-	if cfg.ClaudeDir == "" {
-		return errors.New("claude directory unresolved")
-	}
-	if len(cfg.Environment) > v.maxEnvVars {
-		return fmt.Errorf("too many environment variables: %d > %d", len(cfg.Environment), v.maxEnvVars)
-	}
-	if err := sanitizeEnv(cfg.Environment); err != nil {
-		return err
-	}
-	manifestIndex := make(map[string]*plugins.Manifest, len(cfg.Manifests))
-	for _, mf := range cfg.Manifests {
-		if mf == nil {
-			return errors.New("nil manifest encountered")
+	var errs []error
+	typ := strings.TrimSpace(cfg.Type)
+	switch typ {
+	case "command":
+		if strings.TrimSpace(cfg.Command) == "" {
+			errs = append(errs, errors.New("statusLine.command is required when type=command"))
 		}
-		manifestIndex[mf.Name] = mf
+	case "template":
+		if strings.TrimSpace(cfg.Template) == "" {
+			errs = append(errs, errors.New("statusLine.template is required when type=template"))
+		}
+	case "":
+		errs = append(errs, errors.New("statusLine.type is required"))
+	default:
+		errs = append(errs, fmt.Errorf("statusLine.type %q is not supported", cfg.Type))
 	}
-
-	names := make(map[string]struct{})
-	active := 0
-	for _, ref := range cfg.Plugins {
-		if ref.Disabled {
-			continue
-		}
-		active++
-		if strings.TrimSpace(ref.Name) == "" {
-			return errors.New("plugin name cannot be empty")
-		}
-		if _, exists := names[ref.Name]; exists {
-			return fmt.Errorf("duplicate plugin %s", ref.Name)
-		}
-		names[ref.Name] = struct{}{}
-		if ref.MinVersion != "" && !plugins.IsSemVer(ref.MinVersion) {
-			return fmt.Errorf("plugin %s min_version invalid", ref.Name)
-		}
-		if ref.Path != "" && (filepath.IsAbs(ref.Path) || strings.HasPrefix(filepath.Clean(ref.Path), "..")) {
-			return fmt.Errorf("plugin %s path escapes claude dir", ref.Name)
-		}
-		mf, ok := manifestIndex[ref.Name]
-		if !ok {
-			if ref.Optional {
-				continue
-			}
-			return fmt.Errorf("plugin %s manifest missing", ref.Name)
-		}
-		if ref.MinVersion != "" {
-			if compareSemver(mf.Version, ref.MinVersion) < 0 {
-				return fmt.Errorf("plugin %s version %s below %s", ref.Name, mf.Version, ref.MinVersion)
-			}
-		}
+	if cfg.IntervalSeconds < 0 {
+		errs = append(errs, errors.New("statusLine.intervalSeconds cannot be negative"))
 	}
-	if active > v.maxPlugins {
-		return fmt.Errorf("too many active plugins: %d > %d", active, v.maxPlugins)
+	if cfg.TimeoutSeconds < 0 {
+		errs = append(errs, errors.New("statusLine.timeoutSeconds cannot be negative"))
 	}
-	if err := v.validateSandbox(cfg.Sandbox.AllowedPaths); err != nil {
-		return err
-	}
-	return nil
+	return errs
 }
 
-func (v *DefaultValidator) validateSandbox(paths []string) error {
-	projectRoot := v.root
-	for _, rel := range paths {
-		if rel == "" {
-			continue
-		}
-		if filepath.IsAbs(rel) {
-			return fmt.Errorf("sandbox path must be relative: %s", rel)
-		}
-		clean := filepath.Clean(rel)
-		if strings.HasPrefix(clean, "..") {
-			return fmt.Errorf("sandbox path escapes project: %s", rel)
-		}
-		abs := filepath.Join(projectRoot, clean)
-		if !strings.HasPrefix(abs, projectRoot) {
-			return fmt.Errorf("sandbox path outside project: %s", rel)
-		}
+func validateForceLoginConfig(method, org string) []error {
+	rawOrg := org
+	method = strings.TrimSpace(method)
+	org = strings.TrimSpace(org)
+	if method == "" {
+		return nil
 	}
-	return nil
-}
 
-var envKeyPattern = regexp.MustCompile(`^[A-Z0-9_]+$`)
-
-func sanitizeEnv(env map[string]string) error {
-	for key, value := range env {
-		if !envKeyPattern.MatchString(strings.TrimSpace(key)) {
-			return fmt.Errorf("invalid environment key %q", key)
-		}
-		if strings.ContainsAny(value, "\r\n") {
-			return fmt.Errorf("environment value for %s contains newline", key)
-		}
-		if len(value) > 1024 {
-			return fmt.Errorf("environment value for %s too long", key)
-		}
+	var errs []error
+	if method != "claudeai" && method != "console" {
+		errs = append(errs, fmt.Errorf("forceLoginMethod must be \"claudeai\" or \"console\", got %q", method))
 	}
-	return nil
-}
-
-func compareSemver(a, b string) int {
-	parse := func(v string) []int {
-		v = strings.TrimPrefix(v, "v")
-		parts := strings.SplitN(v, "-", 2)
-		nums := strings.Split(parts[0], ".")
-		res := []int{0, 0, 0}
-		for i := 0; i < len(nums) && i < 3; i++ {
-			res[i] = parseInt(nums[i])
-		}
-		return res
+	if rawOrg != "" && org == "" {
+		errs = append(errs, errors.New("forceLoginOrgUUID cannot be blank"))
 	}
-	av := parse(a)
-	bv := parse(b)
-	for i := 0; i < 3; i++ {
-		if av[i] > bv[i] {
-			return 1
-		}
-		if av[i] < bv[i] {
-			return -1
-		}
-	}
-	return 0
-}
-
-func parseInt(s string) int {
-	n := 0
-	for _, ch := range s {
-		if ch < '0' || ch > '9' {
-			break
-		}
-		n = n*10 + int(ch-'0')
-	}
-	return n
+	return errs
 }
