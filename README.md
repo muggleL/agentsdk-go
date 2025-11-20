@@ -1,85 +1,88 @@
+[中文](README_zh.md) | English
+
 # agentsdk-go
 
-基于 Go 语言实现的 Agent SDK，提供完整的 Claude Code 核心功能和 Middleware 拦截机制。
+An Agent SDK implemented in Go that provides the full Claude Code core capabilities and middleware interception.
 
-## 概述
+## Overview
 
-agentsdk-go 是一个模块化的 Agent 开发框架，实现了 Claude Code 的 7 项核心功能（Hooks、MCP、Sandbox、Skills、Subagents、Commands、Plugins），并在此基础上扩展了 6 点 Middleware 拦截机制。该 SDK 支持 CLI、CI/CD 和企业平台等多种部署场景。
+agentsdk-go is a modular agent development framework that implements Claude Code's seven core capabilities (Hooks, MCP, Sandbox, Skills, Subagents, Commands, Plugins) and extends them with a six-point middleware interception mechanism. The SDK supports deployment scenarios across CLI, CI/CD, and enterprise platforms.
 
-### 技术指标
+### Technical Metrics
 
-- 核心代码：约 6,000 行
-- Agent 核心循环：163 行
-- 测试覆盖率：核心模块平均 91.1%
-- 模块数量：13 个独立包
-- 外部依赖：anthropic-sdk-go、fsnotify、gopkg.in/yaml.v3
+- Core code: ~16,600 lines
+- Agent core loop: 171 lines
+- Test coverage: 90.5% average across core modules
+- Modules: 13 independent packages
+- External dependencies: anthropic-sdk-go, fsnotify, gopkg.in/yaml.v3, google/uuid, golang.org/x/mod, golang.org/x/net
 
-## 系统架构
+## System Architecture
 
-### 核心层（6 个模块）
+### Core Layer (6 modules)
 
-- `pkg/agent` - Agent 执行循环，负责模型调用和工具执行的协调
-- `pkg/middleware` - 6 点拦截机制，支持请求/响应生命周期的扩展
-- `pkg/model` - 模型适配器，当前支持 Anthropic Claude
-- `pkg/tool` - 工具注册与执行，包含内置工具和 MCP 工具支持
-- `pkg/message` - 消息历史管理，基于 LRU 的会话缓存
-- `pkg/api` - 统一 API 接口，对外暴露 SDK 功能
+- `pkg/agent` - Agent execution loop coordinating model calls and tool execution
+- `pkg/middleware` - Six interception points for extending the request/response lifecycle
+- `pkg/model` - Model adapters, currently supports Anthropic Claude
+- `pkg/tool` - Tool registration and execution, including built-in tools and MCP tool support
+- `pkg/message` - Message history management with an LRU-based session cache
+- `pkg/api` - Unified API surface exposing SDK features
 
-### 功能层（7 个模块）
+### Feature Layer (7 modules)
 
-- `pkg/config` - 配置加载，支持 `.claude/` 目录结构和热更新
-- `pkg/plugins` - 插件系统，支持签名验证
-- `pkg/core/events` - 事件总线
-- `pkg/core/hooks` - Hooks 执行器，支持 7 类生命周期事件
-- `pkg/sandbox` - 沙箱隔离，提供文件系统和网络访问控制
-- `pkg/mcp` - MCP（Model Context Protocol）客户端
-- `pkg/runtime` - 运行时组件（skills、subagents、commands）
-- `pkg/security` - 安全工具，包含命令验证和路径解析
+- `pkg/core/hooks` - Hooks executor covering seven lifecycle events with custom extensions
+- `pkg/mcp` - MCP (Model Context Protocol) client bridging external tools (stdio/SSE) with automatic registration
+- `pkg/sandbox` - Sandbox isolation layer controlling filesystem and network access policies
+- `pkg/runtime/skills` - Skills management supporting scriptable loading and hot reload
+- `pkg/runtime/subagents` - Subagent management for multi-agent orchestration and scheduling
+- `pkg/runtime/commands` - Commands parser handling slash-command routing and parameter validation
+- `pkg/plugins` - Plugin system with signature verification and lifecycle hooks
 
-### Middleware 拦截点
+In addition, the feature layer includes supporting packages such as `pkg/config` (configuration loading/hot reload), `pkg/core/events` (event bus), and `pkg/security` (command and path validation).
 
-SDK 在请求处理的关键节点提供拦截能力：
+### Middleware Interception Points
+
+The SDK exposes interception at critical stages of request handling:
 
 ```
-用户请求
+User request
   ↓
-before_agent  ← 请求验证、审计日志
+before_agent  ← Request validation, audit logging
   ↓
-Agent 循环
+Agent loop
   ↓
-before_model  ← Prompt 处理、上下文优化
+before_model  ← Prompt processing, context optimization
   ↓
-模型调用
+Model invocation
   ↓
-after_model   ← 结果过滤、内容检查
+after_model   ← Result filtering, content checks
   ↓
-before_tool   ← 工具参数验证
+before_tool   ← Tool parameter validation
   ↓
-工具执行
+Tool execution
   ↓
-after_tool    ← 结果后处理
+after_tool    ← Result post-processing
   ↓
-after_agent   ← 响应格式化、指标采集
+after_agent   ← Response formatting, metrics collection
   ↓
-用户响应
+User response
 ```
 
-## 安装
+## Installation
 
-### 环境要求
+### Requirements
 
-- Go 1.23 或更高版本
-- Anthropic API Key（运行示例需要）
+- Go 1.24.0 or later
+- Anthropic API Key (required to run examples)
 
-### 获取 SDK
+### Get the SDK
 
 ```bash
 go get github.com/cexll/agentsdk-go
 ```
 
-## 快速开始
+## Quick Start
 
-### 基础示例
+### Basic Example
 
 ```go
 package main
@@ -96,13 +99,13 @@ import (
 func main() {
     ctx := context.Background()
 
-    // 创建模型提供者
+    // Create the model provider
     provider := model.NewAnthropicProvider(
         model.WithAPIKey(os.Getenv("ANTHROPIC_API_KEY")),
         model.WithModel("claude-sonnet-4-5"),
     )
 
-    // 初始化运行时
+    // Initialize the runtime
     runtime, err := api.New(ctx, api.Options{
         ProjectRoot:   ".",
         ModelFactory:  provider,
@@ -112,20 +115,20 @@ func main() {
     }
     defer runtime.Close()
 
-    // 执行任务
+    // Execute a task
     result, err := runtime.Run(ctx, api.Request{
-        Prompt:    "列出当前目录下的文件",
+        Prompt:    "List files in the current directory",
         SessionID: "demo",
     })
     if err != nil {
         log.Fatal(err)
     }
 
-    log.Printf("输出: %s", result.Output)
+    log.Printf("Output: %s", result.Output)
 }
 ```
 
-### 使用 Middleware
+### Using Middleware
 
 ```go
 import (
@@ -136,7 +139,7 @@ import (
     "github.com/cexll/agentsdk-go/pkg/middleware"
 )
 
-// 日志中间件
+// Logging middleware
 loggingMiddleware := middleware.Middleware{
     BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
         log.Printf("[REQUEST] %s", req.Input)
@@ -145,12 +148,12 @@ loggingMiddleware := middleware.Middleware{
     },
     AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
         duration := time.Since(resp.Meta["start_time"].(time.Time))
-        log.Printf("[RESPONSE] %s (耗时: %v)", resp.Output, duration)
+        log.Printf("[RESPONSE] %s (elapsed: %v)", resp.Output, duration)
         return resp, nil
     },
 }
 
-// 注入 Middleware
+// Inject middleware
 runtime, err := api.New(ctx, api.Options{
     ProjectRoot:   ".",
     ModelFactory:  provider,
@@ -158,12 +161,12 @@ runtime, err := api.New(ctx, api.Options{
 })
 ```
 
-### 流式输出
+### Streaming Output
 
 ```go
-// 使用流式 API 获取实时进度
+// Use the streaming API to get real-time progress
 events := runtime.RunStream(ctx, api.Request{
-    Prompt:    "分析代码库结构",
+    Prompt:    "Analyze the repository structure",
     SessionID: "analysis",
 })
 
@@ -172,61 +175,71 @@ for event := range events {
     case "content_block_delta":
         fmt.Print(event.Delta.Text)
     case "tool_execution_start":
-        fmt.Printf("\n[工具执行] %s\n", event.ToolName)
+        fmt.Printf("\n[Tool Execution] %s\n", event.ToolName)
     case "tool_execution_stop":
-        fmt.Printf("[工具结果] %s\n", event.Output)
+        fmt.Printf("[Tool Result] %s\n", event.Output)
     }
 }
 ```
 
-## 项目结构
+## Examples
+
+The repository includes 10 runnable examples: `cli`, `http`, `mcp`, `middleware`, `hooks`, `sandbox`, `skills`, `subagents`, `commands`, `plugins`.
+
+## Project Structure
 
 ```
 agentsdk-go/
-├── pkg/                        # 核心包
-│   ├── agent/                  # Agent 核心循环
-│   ├── middleware/             # Middleware 系统
-│   ├── model/                  # 模型适配器
-│   ├── tool/                   # 工具系统
-│   │   └── builtin/            # 内置工具（bash、file、grep、glob）
-│   ├── message/                # 消息历史管理
-│   ├── api/                    # SDK 统一接口
-│   ├── config/                 # 配置加载
-│   ├── plugins/                # 插件系统
+├── pkg/                        # Core packages
+│   ├── agent/                  # Agent core loop
+│   ├── middleware/             # Middleware system
+│   ├── model/                  # Model adapters
+│   ├── tool/                   # Tool system
+│   │   └── builtin/            # Built-in tools (bash, file, grep, glob)
+│   ├── message/                # Message history management
+│   ├── api/                    # Unified SDK interface
+│   ├── config/                 # Configuration loading
+│   ├── plugins/                # Plugin system
 │   ├── core/
-│   │   ├── events/             # 事件总线
-│   │   └── hooks/              # Hooks 执行器
-│   ├── sandbox/                # 沙箱隔离
-│   ├── mcp/                    # MCP 客户端
+│   │   ├── events/             # Event bus
+│   │   └── hooks/              # Hooks executor
+│   ├── sandbox/                # Sandbox isolation
+│   ├── mcp/                    # MCP client
 │   ├── runtime/
-│   │   ├── skills/             # Skills 管理
-│   │   ├── subagents/          # Subagents 管理
-│   │   └── commands/           # Commands 解析
-│   └── security/               # 安全工具
-├── cmd/cli/                    # CLI 入口
-├── examples/                   # 示例代码
-│   ├── cli/                    # CLI 示例
-│   ├── http/                   # HTTP 服务器示例
-│   ├── mcp/                    # MCP 客户端示例
-│   └── middleware/             # Middleware 示例
-├── test/integration/           # 集成测试
-└── docs/                       # 文档
+│   │   ├── skills/             # Skills management
+│   │   ├── subagents/          # Subagents management
+│   │   └── commands/           # Commands parsing
+│   └── security/               # Security utilities
+├── cmd/cli/                    # CLI entrypoint
+├── examples/                   # Example code
+│   ├── cli/                    # CLI example
+│   ├── http/                   # HTTP server example
+│   ├── mcp/                    # MCP client example
+│   ├── middleware/             # Middleware example
+│   ├── commands/               # Commands example
+│   ├── hooks/                  # Hooks example
+│   ├── sandbox/                # Sandbox example
+│   ├── skills/                 # Skills example
+│   ├── subagents/              # Subagents example
+│   └── plugins/                # Plugins example
+├── test/integration/           # Integration tests
+└── docs/                       # Documentation
 ```
 
-## 配置
+## Configuration
 
-SDK 使用 `.claude/` 目录进行配置，与 Claude Code 兼容：
+The SDK uses the `.claude/` directory for configuration, compatible with Claude Code:
 
 ```
 .claude/
-├── config.yaml       # 项目配置
-├── skills/           # Skills 定义
-├── commands/         # 斜杠命令定义
-├── agents/           # Subagents 定义
-└── plugins/          # 插件目录
+├── config.yaml       # Project configuration
+├── skills/           # Skills definitions
+├── commands/         # Slash command definitions
+├── agents/           # Subagents definitions
+└── plugins/          # Plugin directory
 ```
 
-### 配置示例
+### Configuration Example
 
 ```yaml
 version: "1.0"
@@ -246,9 +259,9 @@ mcp:
 
 ## HTTP API
 
-SDK 提供 HTTP 服务器实现，支持 SSE 流式推送。
+The SDK provides an HTTP server implementation with SSE streaming.
 
-### 启动服务器
+### Start the Server
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
@@ -256,135 +269,133 @@ cd examples/http
 go run .
 ```
 
-服务器默认监听 `:8080`，提供以下端点：
+The server listens on `:8080` by default and exposes these endpoints:
 
-- `POST /v1/run` - 同步执行，返回完整结果
-- `POST /v1/run/stream` - SSE 流式输出，实时返回进度
-- `POST /v1/tools/execute` - 直接执行工具调用
+- `POST /v1/run` - Synchronous execution returning the full result
+- `POST /v1/run/stream` - SSE streaming with real-time progress
+- `POST /v1/tools/execute` - Execute a tool call directly
 
-### 流式 API 示例
+### Streaming API Example
 
 ```bash
 curl -N -X POST http://localhost:8080/v1/run/stream \
   -H 'Content-Type: application/json' \
   -d '{
-    "prompt": "列出当前目录",
+    "prompt": "List the current directory",
     "session_id": "demo"
   }'
 ```
 
-响应格式遵循 Anthropic Messages API 规范，包含以下事件类型：
+The response format follows the Anthropic Messages API and includes these event types:
 
-- `agent_start` / `agent_stop` - Agent 执行边界
-- `iteration_start` / `iteration_stop` - 迭代边界
-- `message_start` / `message_stop` - 消息边界
-- `content_block_delta` - 文本增量输出
-- `tool_execution_start` / `tool_execution_stop` - 工具执行进度
+- `agent_start` / `agent_stop` - Agent execution boundaries
+- `iteration_start` / `iteration_stop` - Iteration boundaries
+- `message_start` / `message_stop` - Message boundaries
+- `content_block_delta` - Incremental text output
+- `tool_execution_start` / `tool_execution_stop` - Tool execution progress
 
-## 测试
+## Testing
 
-### 运行测试
+### Run Tests
 
 ```bash
-# 所有测试
+# All tests
 go test ./...
 
-# 核心模块测试
+# Core module tests
 go test ./pkg/agent/... ./pkg/middleware/... ./pkg/model/...
 
-# 集成测试
+# Integration tests
 go test ./test/integration/...
 
-# 生成覆盖率报告
+# Generate coverage report
 go test -coverprofile=coverage.out ./...
 go tool cover -html=coverage.out
 ```
 
-### 测试覆盖率
+### Test Coverage
 
-#### 核心模块
+#### Core Modules
 
-| 模块 | 覆盖率 |
-|------|--------|
-| pkg/agent | 98.3% |
-| pkg/middleware | 95.9% |
-| pkg/model | 91.4% |
-| pkg/message | 87.8% |
-| pkg/api | 87.2% |
-| pkg/tool | 85.9% |
-| 平均 | 91.1% |
+| Module | Coverage |
+|--------|----------|
+| pkg/agent | 98.4% |
+| pkg/middleware | 72.6% |
+| pkg/model | 90.1% |
+| pkg/message | 98.6% |
+| pkg/api | 81.4% |
+| pkg/tool | 94.3% |
+| Average | 90.5% |
 
-#### 功能模块
+#### Feature Modules
 
-| 模块 | 覆盖率 |
-|------|--------|
-| pkg/config | 83.7% |
-| pkg/plugins | 91.0% |
-| pkg/core/events | 92.5% |
-| pkg/core/hooks | 91.8% |
+| Module | Coverage |
+|--------|----------|
+| pkg/core/hooks | 95.8% |
+| pkg/mcp | 92.0% |
 | pkg/sandbox | 90.5% |
-| pkg/mcp | 90.6% |
 | pkg/runtime/skills | 91.5% |
-| pkg/runtime/subagents | 91.7% |
+| pkg/runtime/subagents | 91.9% |
 | pkg/runtime/commands | 91.4% |
+| pkg/plugins | 90.7% |
 
-## 构建
+## Build
 
-### Makefile 命令
+### Makefile Commands
 
 ```bash
-# 运行测试
+# Run tests
 make test
 
-# 生成覆盖率报告
+# Generate coverage report
 make coverage
 
-# 代码检查
+# Lint code
 make lint
 
-# 构建 CLI 工具
+# Build CLI tool
 make agentctl
 
-# 安装到 GOPATH
+# Install into GOPATH
 make install
 
-# 清理构建产物
+# Clean build artifacts
 make clean
 ```
 
-## 内置工具
+## Built-in Tools
 
-SDK 包含以下内置工具（位于 `pkg/tool/builtin/`）：
+The SDK ships with the following built-in tools (under `pkg/tool/builtin/`):
 
-- `bash` - 执行 shell 命令，支持工作目录和超时配置
-- `file_read` - 读取文件内容
-- `file_write` - 写入文件内容
-- `grep` - 正则搜索，支持递归和文件过滤
-- `glob` - 文件模式匹配
+- `bash` - Execute shell commands with working directory and timeout configuration
+- `file_read` - Read file contents
+- `file_write` - Write file contents
+- `grep` - Regex search with recursion and file filtering
+- `glob` - File pattern matching
 
-所有内置工具遵循沙箱策略，受路径白名单和命令验证器约束。
+All built-in tools obey sandbox policies and are constrained by the path whitelist and command validator.
 
-## 安全机制
+## Security Mechanisms
 
-### 三层防御
+### Three Layers of Defense
 
-1. **路径白名单**：限制文件系统访问范围
-2. **符号链接解析**：防止路径遍历攻击
-3. **命令验证**：阻止危险命令执行
+1. **Path whitelist**: Restricts filesystem access scope
+2. **Symlink resolution**: Prevents path traversal attacks
+3. **Command validation**: Blocks execution of dangerous commands
 
-### 命令验证器
+### Command Validator
 
-位于 `pkg/security/validator.go`，默认阻止以下操作：
+Located at `pkg/security/validator.go`, it blocks the following by default:
 
-- 破坏性命令：`dd`、`mkfs`、`fdisk`、`shutdown`、`reboot`
-- 危险删除模式：`rm -rf`、`rm -r`、`rmdir -p`
-- Shell 元字符：`|`、`;`、`&`、`>`、`<`、`` ` ``（在 Platform 模式下）
+- Destructive commands: `dd`, `mkfs`, `fdisk`, `shutdown`, `reboot`
+- Hazardous delete patterns: `rm -rf`, `rm -r`, `rmdir -p`
+- Shell metacharacters: `|`, `;`, `&`, `>`, `<`, `` ` `` (in Platform mode)
 
-## 开发指南
+## Development Guide
 
-### 添加自定义工具
+### Add a Custom Tool
 
-实现 `tool.Tool` 接口：
+Implement the `tool.Tool` interface:
 
 ```go
 type CustomTool struct{}
@@ -394,7 +405,7 @@ func (t *CustomTool) Name() string {
 }
 
 func (t *CustomTool) Description() string {
-    return "工具描述"
+    return "Tool description"
 }
 
 func (t *CustomTool) Schema() *tool.JSONSchema {
@@ -403,7 +414,7 @@ func (t *CustomTool) Schema() *tool.JSONSchema {
         Properties: map[string]interface{}{
             "param": map[string]interface{}{
                 "type": "string",
-                "description": "参数说明",
+                "description": "Parameter description",
             },
         },
         Required: []string{"param"},
@@ -411,88 +422,91 @@ func (t *CustomTool) Schema() *tool.JSONSchema {
 }
 
 func (t *CustomTool) Execute(ctx context.Context, params map[string]any) (*tool.ToolResult, error) {
-    // 工具实现
+    // Tool implementation
     return &tool.ToolResult{
         Name:   t.Name(),
-        Output: "执行结果",
+        Output: "Execution result",
     }, nil
 }
 ```
 
-### 添加 Middleware
+### Add Middleware
 
 ```go
 customMiddleware := middleware.Middleware{
     BeforeAgent: func(ctx context.Context, req *middleware.AgentRequest) (*middleware.AgentRequest, error) {
-        // 请求前处理
+        // Pre-request handling
         return req, nil
     },
     AfterAgent: func(ctx context.Context, resp *middleware.AgentResponse) (*middleware.AgentResponse, error) {
-        // 响应后处理
+        // Post-response handling
         return resp, nil
     },
     BeforeModel: func(ctx context.Context, msgs []message.Message) ([]message.Message, error) {
-        // 模型调用前处理
+        // Before model call
         return msgs, nil
     },
     AfterModel: func(ctx context.Context, output *agent.ModelOutput) (*agent.ModelOutput, error) {
-        // 模型调用后处理
+        // After model call
         return output, nil
     },
     BeforeTool: func(ctx context.Context, call *middleware.ToolCall) (*middleware.ToolCall, error) {
-        // 工具执行前处理
+        // Before tool execution
         return call, nil
     },
     AfterTool: func(ctx context.Context, result *middleware.ToolResult) (*middleware.ToolResult, error) {
-        // 工具执行后处理
+        // After tool execution
         return result, nil
     },
 }
 ```
 
-## 设计原则
+## Design Principles
 
-### KISS（Keep It Simple, Stupid）
+### KISS (Keep It Simple, Stupid)
 
-- Agent 核心循环保持在 163 行
-- 单一职责，每个模块功能明确
-- 避免过度设计和不必要的抽象
+- Agent core loop stays at 171 lines
+- Single responsibility; each module has a clear role
+- Avoid overdesign and unnecessary abstractions
 
-### 配置驱动
+### Configuration-Driven
 
-- 通过 `.claude/` 目录管理所有配置
-- 支持热更新，无需重启服务
-- 声明式配置优于命令式代码
+- Manage all configuration under `.claude/`
+- Supports hot reload without restarting the service
+- Declarative configuration preferred over imperative code
 
-### 模块化
+### Modularity
 
-- 13 个独立包，松耦合设计
-- 清晰的接口边界
-- 易于测试和维护
+- 13 independent packages with loose coupling
+- Clear interface boundaries
+- Easy to test and maintain
 
-### 可扩展性
+### Extensibility
 
-- Middleware 机制支持灵活扩展
-- 工具系统支持自定义工具注册
-- MCP 协议支持外部工具集成
+- Middleware mechanism for flexible extensions
+- Tool system supports custom tool registration
+- MCP protocol integrates external tools
 
-## 文档
+## Documentation
 
-- [架构文档](docs/architecture.md) - 详细架构分析
-- [入门指南](docs/getting-started.md) - 分步教程
-- [API 参考](docs/api-reference.md) - API 文档
-- [安全实践](docs/security.md) - 安全配置指南
-- [HTTP API 指南](examples/http/README.md) - HTTP 服务器使用说明
-- [开发计划](.claude/specs/claude-code-rewrite/dev-plan.md) - 架构设计计划
-- [完成报告](.claude/specs/claude-code-rewrite/COMPLETION_REPORT.md) - 实现报告
+- [Architecture](docs/architecture.md) - Detailed architecture analysis
+- [Getting Started](docs/getting-started.md) - Step-by-step tutorial
+- [API Reference](docs/api-reference.md) - API documentation
+- [Security](docs/security.md) - Security configuration guide
+- [HTTP API Guide](examples/http/README.md) - HTTP server instructions
+- [Development Plan](.claude/specs/claude-code-rewrite/dev-plan.md) - Architecture plan
+- [Completion Report](.claude/specs/claude-code-rewrite/COMPLETION_REPORT.md) - Implementation report
 
-## 技术栈
+## Tech Stack
 
-- Go 1.23+
-- [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) - Anthropic 官方 SDK
-- [fsnotify](https://github.com/fsnotify/fsnotify) - 文件系统监控
-- [yaml.v3](https://gopkg.in/yaml.v3) - YAML 解析
+- Go 1.24.0+
+- [anthropic-sdk-go](https://github.com/anthropics/anthropic-sdk-go) - Anthropic official SDK
+- [fsnotify](https://github.com/fsnotify/fsnotify) - Filesystem watchers
+- [yaml.v3](https://gopkg.in/yaml.v3) - YAML parser
+- [google/uuid](https://github.com/google/uuid) - UUID utilities
+- [golang.org/x/mod](https://pkg.go.dev/golang.org/x/mod) - Module utilities
+- [golang.org/x/net](https://pkg.go.dev/golang.org/x/net) - Extended net packages
 
-## 许可证
+## License
 
-详见 [LICENSE](LICENSE) 文件。
+See [LICENSE](LICENSE).
