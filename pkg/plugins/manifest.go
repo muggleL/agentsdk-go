@@ -3,6 +3,7 @@ package plugins
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,33 +14,36 @@ import (
 	"strings"
 
 	"golang.org/x/mod/semver"
-	"gopkg.in/yaml.v3"
 )
+
+const manifestFileName = "plugin.json"
 
 var (
 	// ErrManifestNotFound indicates that the plugin directory is missing a manifest file.
 	ErrManifestNotFound = errors.New("plugin manifest not found")
 
-	manifestFilenames = []string{"manifest.yaml", "manifest.yml", "manifest.json"}
-
 	pluginNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{1,63}$`)
 )
 
-// Manifest describes a plugin bundle published under .claude/plugins.
+// Manifest models .claude-plugin/plugin.json metadata. Signature fields remain
+// to preserve the existing trust-store workflow; the digest now protects the
+// canonical manifest payload instead of an entrypoint file.
 type Manifest struct {
-	Name         string            `json:"name" yaml:"name"`
-	Version      string            `json:"version" yaml:"version"`
-	Entrypoint   string            `json:"entrypoint" yaml:"entrypoint"`
-	Capabilities []string          `json:"capabilities" yaml:"capabilities"`
-	Metadata     map[string]string `json:"metadata" yaml:"metadata"`
-	Digest       string            `json:"digest" yaml:"digest"`
-	Signer       string            `json:"signer" yaml:"signer"`
-	Signature    string            `json:"signature" yaml:"signature"`
+	Name        string              `json:"name"`
+	Version     string              `json:"version"`
+	Description string              `json:"description"`
+	Author      string              `json:"author"`
+	Commands    []string            `json:"commands"`
+	Agents      []string            `json:"agents"`
+	Skills      []string            `json:"skills"`
+	Hooks       map[string][]string `json:"hooks"`
+	Digest      string              `json:"digest,omitempty"`
+	Signer      string              `json:"signer,omitempty"`
+	Signature   string              `json:"signature,omitempty"`
 
-	ManifestPath  string `json:"-" yaml:"-"`
-	PluginDir     string `json:"-" yaml:"-"`
-	EntrypointAbs string `json:"-" yaml:"-"`
-	Trusted       bool   `json:"-" yaml:"-"`
+	ManifestPath string `json:"-"`
+	PluginDir    string `json:"-"`
+	Trusted      bool   `json:"-"`
 }
 
 // ManifestOption mutates manifest loading behaviour.
@@ -57,14 +61,14 @@ func WithTrustStore(store *TrustStore) ManifestOption {
 	}
 }
 
-// WithRoot constrains manifests/entrypoints to live under the provided root.
+// WithRoot constrains manifests to live under the provided root.
 func WithRoot(root string) ManifestOption {
 	return func(opts *manifestOptions) {
 		opts.root = root
 	}
 }
 
-// LoadManifest parses and validates a manifest file.
+// LoadManifest parses and validates a .claude-plugin/plugin.json file.
 func LoadManifest(path string, opts ...ManifestOption) (*Manifest, error) {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -84,43 +88,45 @@ func LoadManifest(path string, opts ...ManifestOption) (*Manifest, error) {
 		fn(&opt)
 	}
 
+	var mf Manifest
+	if err := json.Unmarshal(data, &mf); err != nil {
+		return nil, fmt.Errorf("decode manifest: %w", err)
+	}
+
 	manifestDir := filepath.Dir(path)
+	pluginDir := manifestDir
+	if filepath.Base(manifestDir) == ".claude-plugin" {
+		pluginDir = filepath.Dir(manifestDir)
+	}
 	if opt.root == "" {
-		opt.root = manifestDir
+		opt.root = pluginDir
 	}
 	rootAbs, err := filepath.Abs(opt.root)
 	if err != nil {
 		return nil, fmt.Errorf("resolve root: %w", err)
 	}
-
-	var mf Manifest
-	if err := yaml.Unmarshal(data, &mf); err != nil {
-		return nil, fmt.Errorf("decode manifest: %w", err)
+	pluginDirAbs, err := filepath.Abs(pluginDir)
+	if err != nil {
+		return nil, fmt.Errorf("resolve plugin dir: %w", err)
+	}
+	if !strings.HasPrefix(pluginDirAbs, rootAbs) {
+		return nil, fmt.Errorf("manifest outside trusted root: %s", pluginDirAbs)
 	}
 
+	normalizeManifest(&mf)
 	if err := validateManifestFields(&mf); err != nil {
 		return nil, err
 	}
 
-	pluginDirAbs, err := filepath.Abs(manifestDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve plugin dir: %w", err)
-	}
-	entryAbs, err := secureJoin(pluginDirAbs, mf.Entrypoint)
+	computedDigest, err := computeManifestDigest(&mf)
 	if err != nil {
 		return nil, err
 	}
-	if !strings.HasPrefix(entryAbs, rootAbs) {
-		return nil, fmt.Errorf("entrypoint escapes trusted root: %s", mf.Entrypoint)
+	if mf.Digest != "" && !strings.EqualFold(mf.Digest, computedDigest) {
+		return nil, fmt.Errorf("manifest digest mismatch: want %s computed %s", mf.Digest, computedDigest)
 	}
+	mf.Digest = computedDigest
 
-	digest, err := computeDigest(entryAbs)
-	if err != nil {
-		return nil, err
-	}
-	if !strings.EqualFold(digest, mf.Digest) {
-		return nil, fmt.Errorf("digest mismatch for %s", mf.Entrypoint)
-	}
 	payload, err := CanonicalManifestBytes(&mf)
 	if err != nil {
 		return nil, err
@@ -135,15 +141,17 @@ func LoadManifest(path string, opts ...ManifestOption) (*Manifest, error) {
 		mf.Trusted = true
 	}
 
-	mf.ManifestPath = path
+	manifestAbs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	mf.ManifestPath = manifestAbs
 	mf.PluginDir = pluginDirAbs
-	mf.EntrypointAbs = entryAbs
-	mf.Capabilities = normalizeStrings(mf.Capabilities)
 
 	return &mf, nil
 }
 
-// DiscoverManifests walks a plugins directory and loads every manifest.
+// DiscoverManifests walks a directory and loads every child manifest it can find.
 func DiscoverManifests(dir string, store *TrustStore) ([]*Manifest, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -178,19 +186,17 @@ func DiscoverManifests(dir string, store *TrustStore) ([]*Manifest, error) {
 
 // FindManifest returns the manifest file path for a plugin directory.
 func FindManifest(dir string) (string, error) {
-	for _, name := range manifestFilenames {
-		path := filepath.Join(dir, name)
-		info, err := os.Stat(path)
-		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) {
-				continue
-			}
-			return "", err
-		}
-		if info.IsDir() {
-			continue
-		}
-		return path, nil
+	primary := filepath.Join(dir, ".claude-plugin", manifestFileName)
+	if info, err := os.Stat(primary); err == nil && !info.IsDir() {
+		return primary, nil
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
+	}
+	alt := filepath.Join(dir, manifestFileName)
+	if info, err := os.Stat(alt); err == nil && !info.IsDir() {
+		return alt, nil
+	} else if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return "", err
 	}
 	return "", fmt.Errorf("%w in %s", ErrManifestNotFound, dir)
 }
@@ -205,61 +211,117 @@ func validateManifestFields(m *Manifest) error {
 	if !IsSemVer(m.Version) {
 		return fmt.Errorf("invalid semver %q", m.Version)
 	}
-	if strings.TrimSpace(m.Entrypoint) == "" {
-		return errors.New("entrypoint is required")
+	for i, cmd := range m.Commands {
+		if strings.TrimSpace(cmd) == "" {
+			return fmt.Errorf("commands[%d] is empty", i)
+		}
 	}
-	if len(m.Digest) != 64 {
-		return errors.New("digest must be a sha256 hex")
+	for i, agent := range m.Agents {
+		if strings.TrimSpace(agent) == "" {
+			return fmt.Errorf("agents[%d] is empty", i)
+		}
 	}
-	if _, err := hex.DecodeString(m.Digest); err != nil {
-		return fmt.Errorf("invalid digest: %w", err)
+	for i, skill := range m.Skills {
+		if strings.TrimSpace(skill) == "" {
+			return fmt.Errorf("skills[%d] is empty", i)
+		}
+	}
+	if m.Digest != "" {
+		if len(m.Digest) != 64 {
+			return errors.New("digest must be a sha256 hex")
+		}
+		if _, err := hex.DecodeString(m.Digest); err != nil {
+			return fmt.Errorf("invalid digest: %w", err)
+		}
 	}
 	return nil
 }
 
-func computeDigest(path string) (string, error) {
-	data, err := os.ReadFile(path)
+func computeManifestDigest(m *Manifest) (string, error) {
+	if m == nil {
+		return "", errors.New("manifest is nil")
+	}
+	payload := struct {
+		Name        string              `json:"name"`
+		Version     string              `json:"version"`
+		Description string              `json:"description"`
+		Author      string              `json:"author"`
+		Commands    []string            `json:"commands,omitempty"`
+		Agents      []string            `json:"agents,omitempty"`
+		Skills      []string            `json:"skills,omitempty"`
+		Hooks       map[string][]string `json:"hooks,omitempty"`
+	}{
+		Name:        m.Name,
+		Version:     m.Version,
+		Description: m.Description,
+		Author:      m.Author,
+		Commands:    m.Commands,
+		Agents:      m.Agents,
+		Skills:      m.Skills,
+		Hooks:       m.Hooks,
+	}
+	data, err := json.Marshal(payload)
 	if err != nil {
-		return "", fmt.Errorf("read entrypoint: %w", err)
+		return "", err
 	}
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:]), nil
 }
 
-func secureJoin(base, rel string) (string, error) {
-	clean := filepath.Clean(rel)
-	if filepath.IsAbs(clean) {
-		return "", errors.New("entrypoint must be relative")
+func normalizeManifest(m *Manifest) {
+	if m == nil {
+		return
 	}
-	joined := filepath.Join(base, clean)
-	joinedAbs, err := filepath.Abs(joined)
-	if err != nil {
-		return "", err
-	}
-	if !strings.HasPrefix(joinedAbs, base) {
-		return "", fmt.Errorf("entrypoint escapes plugin dir: %s", rel)
-	}
-	return joinedAbs, nil
+	m.Name = strings.TrimSpace(m.Name)
+	m.Version = strings.TrimSpace(m.Version)
+	m.Description = strings.TrimSpace(m.Description)
+	m.Author = strings.TrimSpace(m.Author)
+	m.Commands = normalizeList(m.Commands)
+	m.Agents = normalizeList(m.Agents)
+	m.Skills = normalizeList(m.Skills)
+	m.Hooks = normalizeHookMap(m.Hooks)
 }
 
-func normalizeStrings(values []string) []string {
+func normalizeList(values []string) []string {
 	if len(values) == 0 {
 		return nil
 	}
 	uniq := make(map[string]struct{}, len(values))
-	for _, val := range values {
-		trimmed := strings.TrimSpace(val)
+	for _, v := range values {
+		trimmed := strings.TrimSpace(v)
 		if trimmed == "" {
 			continue
 		}
-		uniq[strings.ToLower(trimmed)] = struct{}{}
+		uniq[trimmed] = struct{}{}
 	}
 	result := make([]string, 0, len(uniq))
-	for key := range uniq {
-		result = append(result, key)
+	for k := range uniq {
+		result = append(result, k)
 	}
 	sort.Strings(result)
 	return result
+}
+
+func normalizeHookMap(src map[string][]string) map[string][]string {
+	if len(src) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(src))
+	for key, vals := range src {
+		trimmedKey := strings.TrimSpace(key)
+		if trimmedKey == "" {
+			continue
+		}
+		normVals := normalizeList(vals)
+		if len(normVals) == 0 {
+			continue
+		}
+		out[trimmedKey] = normVals
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // IsSemVer validates a minimal SemVer string.

@@ -95,35 +95,49 @@ func CanonicalManifestBytes(mf *Manifest) ([]byte, error) {
 	if mf == nil {
 		return nil, errors.New("manifest is nil")
 	}
-	caps := append([]string(nil), mf.Capabilities...)
-	sort.Strings(caps)
-	meta := make(map[string]string, len(mf.Metadata))
-	var keys []string
-	for k, v := range mf.Metadata {
-		meta[k] = v
-		keys = append(keys, k)
+	commands := append([]string(nil), mf.Commands...)
+	agents := append([]string(nil), mf.Agents...)
+	skills := append([]string(nil), mf.Skills...)
+	sort.Strings(commands)
+	sort.Strings(agents)
+	sort.Strings(skills)
+	hookKeys := make([]string, 0, len(mf.Hooks))
+	for k := range mf.Hooks {
+		hookKeys = append(hookKeys, k)
 	}
-	sort.Strings(keys)
-	orderedMeta := make([][2]string, 0, len(keys))
-	for _, k := range keys {
-		orderedMeta = append(orderedMeta, [2]string{k, meta[k]})
+	sort.Strings(hookKeys)
+	type hookEntry struct {
+		Name   string   `json:"name"`
+		Values []string `json:"values"`
+	}
+	hooks := make([]hookEntry, 0, len(hookKeys))
+	for _, name := range hookKeys {
+		vals := append([]string(nil), mf.Hooks[name]...)
+		sort.Strings(vals)
+		hooks = append(hooks, hookEntry{Name: name, Values: vals})
 	}
 	payload := struct {
-		Name         string      `json:"name"`
-		Version      string      `json:"version"`
-		Entrypoint   string      `json:"entrypoint"`
-		Capabilities []string    `json:"capabilities"`
-		Metadata     [][2]string `json:"metadata"`
-		Digest       string      `json:"digest"`
-		Signer       string      `json:"signer"`
+		Name        string      `json:"name"`
+		Version     string      `json:"version"`
+		Description string      `json:"description"`
+		Author      string      `json:"author"`
+		Commands    []string    `json:"commands"`
+		Agents      []string    `json:"agents"`
+		Skills      []string    `json:"skills"`
+		Hooks       []hookEntry `json:"hooks"`
+		Digest      string      `json:"digest"`
+		Signer      string      `json:"signer"`
 	}{
-		Name:         mf.Name,
-		Version:      mf.Version,
-		Entrypoint:   mf.Entrypoint,
-		Capabilities: caps,
-		Metadata:     orderedMeta,
-		Digest:       strings.ToLower(mf.Digest),
-		Signer:       mf.Signer,
+		Name:        mf.Name,
+		Version:     mf.Version,
+		Description: mf.Description,
+		Author:      mf.Author,
+		Commands:    commands,
+		Agents:      agents,
+		Skills:      skills,
+		Hooks:       hooks,
+		Digest:      strings.ToLower(mf.Digest),
+		Signer:      mf.Signer,
 	}
 	return json.Marshal(payload)
 }

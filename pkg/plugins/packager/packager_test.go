@@ -4,62 +4,33 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
-	"crypto/sha256"
-	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/cexll/agentsdk-go/pkg/plugins"
-	"gopkg.in/yaml.v3"
 )
 
 func TestPackagerExportImport(t *testing.T) {
 	root := t.TempDir()
 	pluginDir := filepath.Join(root, "demo")
-	if err := os.Mkdir(pluginDir, 0o755); err != nil {
-		t.Fatalf("mkdir plugin: %v", err)
-	}
-	entry := []byte("#!/bin/sh\necho ok\n")
-	entryPath := filepath.Join(pluginDir, "main.sh")
-	if err := os.WriteFile(entryPath, entry, 0o755); err != nil { //nolint:gosec // executable test script
-		t.Fatalf("write entry: %v", err)
-	}
-	assetsDir := filepath.Join(pluginDir, "assets")
-	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
-		t.Fatalf("mkdir assets: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(assetsDir, "extra.txt"), []byte("extra"), 0o600); err != nil {
-		t.Fatalf("write asset: %v", err)
-	}
-	digest := sha256Bytes(entry)
-	mf := plugins.Manifest{
-		Name:       "demo",
-		Version:    "1.0.0",
-		Entrypoint: "main.sh",
-		Digest:     digest,
-	}
-	data, err := yaml.Marshal(mf)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.yaml"), data, 0o600); err != nil {
-		t.Fatalf("write manifest: %v", err)
-	}
+	writePlugin(t, pluginDir)
 
-	packager, err := NewPackager(root, nil)
+	p, err := NewPackager(root, nil)
 	if err != nil {
 		t.Fatalf("packager: %v", err)
 	}
 	var buf bytes.Buffer
-	manifest, err := packager.Export("demo", &buf)
+	manifest, err := p.Export("demo", &buf)
 	if err != nil {
-		t.Fatalf("export failed: %v", err)
+		t.Fatalf("export: %v", err)
 	}
-	if manifest.Name != "demo" || manifest.Digest != digest {
-		t.Fatalf("unexpected manifest: %+v", manifest)
+	if manifest.Name != "demo" {
+		t.Fatalf("unexpected manifest name %s", manifest.Name)
 	}
 
 	installRoot := filepath.Join(t.TempDir(), "plugins")
@@ -69,23 +40,19 @@ func TestPackagerExportImport(t *testing.T) {
 	}
 	imported, err := installer.Import(bytes.NewReader(buf.Bytes()), "demo")
 	if err != nil {
-		t.Fatalf("import failed: %v", err)
+		t.Fatalf("import: %v", err)
 	}
-	if imported.Name != "demo" || imported.Digest != digest {
-		t.Fatalf("imported manifest mismatch: %+v", imported)
+	if imported.Name != manifest.Name || imported.Digest != manifest.Digest {
+		t.Fatalf("imported manifest mismatch")
 	}
-	entryData, err := os.ReadFile(filepath.Join(installRoot, "demo", "main.sh"))
-	if err != nil {
-		t.Fatalf("read extracted: %v", err)
-	}
-	if string(entryData) != string(entry) {
-		t.Fatalf("entrypoint content mismatch")
+	if _, err := os.Stat(filepath.Join(installRoot, "demo", "README.md")); err != nil {
+		t.Fatalf("expected file copied: %v", err)
 	}
 }
 
 func TestPackagerImportGuards(t *testing.T) {
 	root := t.TempDir()
-	packager, err := NewPackager(root, nil)
+	p, err := NewPackager(root, nil)
 	if err != nil {
 		t.Fatalf("packager: %v", err)
 	}
@@ -94,19 +61,15 @@ func TestPackagerImportGuards(t *testing.T) {
 	var buf bytes.Buffer
 	gz := gzip.NewWriter(&buf)
 	tw := tar.NewWriter(gz)
-	if err := tw.WriteHeader(&tar.Header{Name: "../evil", Mode: 0600, Size: int64(len("data"))}); err != nil {
+	if err := tw.WriteHeader(&tar.Header{Name: "../evil", Mode: 0600, Size: int64(len("x"))}); err != nil {
 		t.Fatalf("write header: %v", err)
 	}
-	if _, err := tw.Write([]byte("data")); err != nil {
-		t.Fatalf("write data: %v", err)
+	if _, err := tw.Write([]byte("x")); err != nil {
+		t.Fatalf("write body: %v", err)
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar writer: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("close gzip writer: %v", err)
-	}
-	if _, err := packager.Import(bytes.NewReader(buf.Bytes()), "evil"); !errors.Is(err, ErrUnsafeArchive) {
+	tw.Close()
+	gz.Close()
+	if _, err := p.Import(bytes.NewReader(buf.Bytes()), "evil"); !errors.Is(err, ErrUnsafeArchive) {
 		t.Fatalf("expected unsafe archive error, got %v", err)
 	}
 
@@ -118,22 +81,13 @@ func TestPackagerImportGuards(t *testing.T) {
 		t.Fatalf("write header: %v", err)
 	}
 	if _, err := tw.Write([]byte("x")); err != nil {
-		t.Fatalf("write x: %v", err)
+		t.Fatalf("write body: %v", err)
 	}
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar writer: %v", err)
+	tw.Close()
+	gz.Close()
+	if _, err := p.Import(bytes.NewReader(buf.Bytes()), "missing"); err == nil {
+		t.Fatalf("expected manifest error")
 	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("close gzip writer: %v", err)
-	}
-	if _, err := packager.Import(bytes.NewReader(buf.Bytes()), "missing"); err == nil {
-		t.Fatalf("expected missing manifest error")
-	}
-}
-
-func sha256Bytes(data []byte) string {
-	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
 }
 
 func TestPackagerValidationHelpers(t *testing.T) {
@@ -152,365 +106,370 @@ func TestPackagerValidationHelpers(t *testing.T) {
 		t.Fatalf("nil packager export should error")
 	}
 	if nilPackager.Root() != "" {
-		t.Fatalf("nil packager root should be empty")
-	}
-
-	if err := ensureEmptyDir(p.Root()); err != nil {
-		t.Fatalf("ensure empty dir on existing empty dir: %v", err)
-	}
-	filePath := filepath.Join(p.Root(), "file")
-	if err := os.WriteFile(filePath, []byte("x"), 0o600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := ensureEmptyDir(p.Root()); !errors.Is(err, ErrDestinationExists) {
-		t.Fatalf("expected ErrDestinationExists, got %v", err)
-	}
-	if err := ensureEmptyDir(filePath); !errors.Is(err, ErrDestinationExists) {
-		t.Fatalf("expected ErrDestinationExists for file path")
+		t.Fatalf("expected empty root for nil packager")
 	}
 }
 
-func TestPackagerPackageDirGuards(t *testing.T) {
+func TestPackagerManifestMismatch(t *testing.T) {
 	root := t.TempDir()
+	pluginDir := filepath.Join(root, "demo")
+	requireNoError(t, os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755))
+	bad := plugins.Manifest{Name: "demo", Version: "1.0.0", Digest: "deadbeef"}
+	data, err := json.Marshal(bad)
+	if err != nil {
+		t.Fatalf("marshal manifest: %v", err)
+	}
+	requireNoError(t, os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), data, 0o600))
+
 	p, err := NewPackager(root, nil)
 	if err != nil {
 		t.Fatalf("packager: %v", err)
 	}
-	var buf bytes.Buffer
-	if _, err := p.PackageDir(t.TempDir(), &buf); err == nil {
-		t.Fatalf("expected error when packaging dir outside root")
-	}
-	var nilPackager *Packager
-	if _, err := nilPackager.PackageDir(root, &buf); err == nil {
-		t.Fatalf("expected nil packager package error")
+	if _, err := p.Export("demo", io.Discard); err == nil {
+		t.Fatalf("expected digest mismatch error")
 	}
 }
 
 func TestPackagerImportDestinationExists(t *testing.T) {
 	root := t.TempDir()
+	pluginDir := filepath.Join(root, "demo")
+	writePlugin(t, pluginDir)
 	p, err := NewPackager(root, nil)
 	if err != nil {
 		t.Fatalf("packager: %v", err)
 	}
-	pluginDir := filepath.Join(root, "src")
-	if err := os.Mkdir(pluginDir, 0o755); err != nil {
-		t.Fatalf("mkdir plugin: %v", err)
-	}
-	entry := []byte("echo hi")
-	if err := os.WriteFile(filepath.Join(pluginDir, "main.sh"), entry, 0o755); err != nil { //nolint:gosec // executable test script
-		t.Fatalf("write entry: %v", err)
-	}
-	digest := sha256Bytes(entry)
-	mf := plugins.Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main.sh", Digest: digest}
-	data, err := yaml.Marshal(mf)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(pluginDir, "manifest.yaml"), data, 0o600); err != nil {
-		t.Fatalf("manifest write: %v", err)
-	}
 	var buf bytes.Buffer
-	if _, err := p.PackageDir(pluginDir, &buf); err != nil {
-		t.Fatalf("package dir: %v", err)
+	if _, err := p.Export("demo", &buf); err != nil {
+		t.Fatalf("export: %v", err)
 	}
-	dest := filepath.Join(root, "demo")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		t.Fatalf("mkdir dest: %v", err)
+	dest := filepath.Join(root, "installed")
+	requireNoError(t, os.MkdirAll(filepath.Join(dest, "placeholder"), 0o755))
+	requireNoError(t, os.WriteFile(filepath.Join(dest, "placeholder", "file.txt"), []byte("x"), 0o600))
+	installer, err := NewPackager(dest, nil)
+	if err != nil {
+		t.Fatalf("installer: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dest, "placeholder"), []byte("x"), 0o600); err != nil {
-		t.Fatalf("write placeholder: %v", err)
-	}
-	if _, err := p.Import(bytes.NewReader(buf.Bytes()), "demo"); !errors.Is(err, ErrDestinationExists) {
+	if _, err := installer.Import(bytes.NewReader(buf.Bytes()), "placeholder"); !errors.Is(err, ErrDestinationExists) {
 		t.Fatalf("expected destination exists error, got %v", err)
 	}
 }
 
-func TestPackagerRestoreEntry(t *testing.T) {
+func TestPackageDirErrorCases(t *testing.T) {
 	root := t.TempDir()
 	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	dest := filepath.Join(root, "dest")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		t.Fatalf("mkdir dest: %v", err)
-	}
-	dirHeader := &tar.Header{Name: "dir", Typeflag: tar.TypeDir, Mode: 0o755}
-	if err := p.restoreEntry(dest, dirHeader, nil); err != nil {
-		t.Fatalf("restore dir: %v", err)
-	}
-	fileHeader := &tar.Header{Name: "dir/file.txt", Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len("data"))}
-	if err := p.restoreEntry(dest, fileHeader, bytes.NewReader([]byte("data"))); err != nil {
-		t.Fatalf("restore file: %v", err)
-	}
-	content, err := os.ReadFile(filepath.Join(dest, "dir", "file.txt"))
-	if err != nil || string(content) != "data" {
-		t.Fatalf("unexpected content: %s err=%v", content, err)
-	}
-	if err := p.restoreEntry(dest, &tar.Header{Name: "/abs", Typeflag: tar.TypeReg}, bytes.NewReader(nil)); !errors.Is(err, ErrUnsafeArchive) {
-		t.Fatalf("expected unsafe error, got %v", err)
-	}
-	if err := p.restoreEntry(dest, &tar.Header{Name: "../escape", Typeflag: tar.TypeDir}, nil); err == nil {
-		t.Fatalf("expected unsafe path rejection")
-	}
-	if err := p.restoreEntry(dest, &tar.Header{Name: ".", Typeflag: tar.TypeDir}, nil); err != nil {
-		t.Fatalf("dot entry should be ignored: %v", err)
-	}
-}
+	requireNoError(t, err)
 
-func TestPackagerRestoreEntryErrorPaths(t *testing.T) {
-	root := t.TempDir()
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	dest := filepath.Join(root, "dest")
-	if err := os.MkdirAll(dest, 0o755); err != nil {
-		t.Fatalf("mkdir dest: %v", err)
-	}
-
-	// mkdir failure (parent already file)
-	block := filepath.Join(dest, "file-as-dir")
-	if err := os.WriteFile(block, []byte("x"), 0600); err != nil {
-		t.Fatalf("write block: %v", err)
-	}
-	header := &tar.Header{Name: "file-as-dir/child.txt", Typeflag: tar.TypeReg, Mode: 0600, Size: int64(len("child"))}
-	if err := p.restoreEntry(dest, header, bytes.NewReader([]byte("child"))); err == nil {
-		t.Fatalf("expected mkdirAll error")
-	}
-
-	// open failure due to existing directory
-	existing := filepath.Join(dest, "existing")
-	if err := os.Mkdir(existing, 0o755); err != nil {
-		t.Fatalf("mkdir existing: %v", err)
-	}
-	header = &tar.Header{Name: "existing", Typeflag: tar.TypeReg, Mode: 0600, Size: 0}
-	if err := p.restoreEntry(dest, header, bytes.NewReader(nil)); err == nil {
-		t.Fatalf("expected open file error")
-	}
-
-	// copy failure
-	header = &tar.Header{Name: "copy.txt", Typeflag: tar.TypeReg, Mode: 0600, Size: 10}
-	if err := p.restoreEntry(dest, header, errReader{}); err == nil {
-		t.Fatalf("expected copy error")
-	}
-
-	// default branch (symlink) should be ignored
-	if err := p.restoreEntry(dest, &tar.Header{Name: "noop", Typeflag: tar.TypeSymlink}, bytes.NewReader(nil)); err != nil {
-		t.Fatalf("default branch should succeed: %v", err)
-	}
-}
-
-func TestPackagerPackageDirMissingManifest(t *testing.T) {
-	root := t.TempDir()
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	dir := filepath.Join(root, "plugin")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatalf("mkdir plugin: %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := p.PackageDir(dir, &buf); err == nil {
-		t.Fatalf("expected error for missing manifest")
-	}
-}
-
-func TestPackagerPackageDirLockedFile(t *testing.T) {
-	root := t.TempDir()
-	dir := setupPlugin(t, root, "demo", []byte("#!/bin/sh\necho hi\n"))
-	locked := filepath.Join(dir, "locked.bin")
-	if err := os.WriteFile(locked, []byte("secret"), 0o000); err != nil {
-		t.Fatalf("write locked: %v", err)
-	}
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := p.PackageDir(dir, &buf); err == nil {
-		t.Fatalf("expected error due to locked file")
-	}
-}
-
-func TestPackagerPackageDirWriterFailures(t *testing.T) {
-	root := t.TempDir()
-	payload := bytes.Repeat([]byte("x"), 4096)
-	dir := setupPlugin(t, root, "demo", payload)
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-
-	failWriter := failingWriter{err: errors.New("sink failure")}
-	if _, err := p.PackageDir(dir, failWriter); err == nil {
-		t.Fatalf("expected writer error")
-	}
-}
-
-func TestPackagerPackageDirManifestMismatch(t *testing.T) {
-	root := t.TempDir()
-	dir := filepath.Join(root, "plugin")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatalf("mkdir plugin: %v", err)
-	}
-	entry := []byte("echo hi")
-	if err := os.WriteFile(filepath.Join(dir, "main.sh"), entry, 0600); err != nil {
-		t.Fatalf("write entry: %v", err)
-	}
-	mf := plugins.Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main.sh", Digest: "deadbeef"}
-	data, err := yaml.Marshal(mf)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), data, 0600); err != nil {
-		t.Fatalf("write manifest: %v", err)
-	}
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := p.PackageDir(dir, &buf); err == nil {
-		t.Fatalf("expected digest mismatch error")
-	}
-}
-
-func TestPackagerPackageDirUnreadableFile(t *testing.T) {
-	root := t.TempDir()
-	dir := setupPlugin(t, root, "demo", []byte("echo hi"))
-	restrictedDir := filepath.Join(dir, "secret")
-	if err := os.Mkdir(restrictedDir, 0o000); err != nil {
-		t.Fatalf("mkdir secret: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(restrictedDir, 0o755); err != nil {
-			t.Fatalf("restore restricted dir: %v", err)
+	t.Run("source missing", func(t *testing.T) {
+		_, err := p.PackageDir(filepath.Join(root, "ghost"), io.Discard)
+		if err == nil || !errors.Is(err, plugins.ErrManifestNotFound) {
+			t.Fatalf("expected manifest not found, got %v", err)
 		}
 	})
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	var buf bytes.Buffer
-	if _, err := p.PackageDir(dir, &buf); err == nil {
-		t.Fatalf("expected walk error due to restricted dir")
-	}
-}
 
-func TestPackagerImportInvalidArchive(t *testing.T) {
-	root := t.TempDir()
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	if _, err := p.Import(bytes.NewReader([]byte("not gzip data")), "broken"); err == nil {
-		t.Fatalf("expected gzip reader error")
-	}
-
-	var nilPackager *Packager
-	if _, err := nilPackager.Import(bytes.NewReader(nil), "demo"); err == nil {
-		t.Fatalf("nil packager import should error")
-	}
-}
-
-func TestPackagerImportInvalidManifest(t *testing.T) {
-	root := t.TempDir()
-	p, err := NewPackager(root, nil)
-	if err != nil {
-		t.Fatalf("packager: %v", err)
-	}
-	var buf bytes.Buffer
-	gz := gzip.NewWriter(&buf)
-	tw := tar.NewWriter(gz)
-	main := []byte("echo hi\n")
-	writeTarFile(t, tw, "main.sh", main, 0o755)
-	badManifest := plugins.Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main.sh", Digest: "deadbeef"}
-	data, err := yaml.Marshal(badManifest)
-	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
-	}
-	writeTarFile(t, tw, "manifest.yaml", data, 0600)
-	if err := tw.Close(); err != nil {
-		t.Fatalf("close tar writer: %v", err)
-	}
-	if err := gz.Close(); err != nil {
-		t.Fatalf("close gzip writer: %v", err)
-	}
-	if _, err := p.Import(bytes.NewReader(buf.Bytes()), "demo"); err == nil {
-		t.Fatalf("expected manifest load error")
-	}
-}
-
-func TestEnsureEmptyDirAdditionalGuards(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "file"), []byte("x"), 0600); err != nil {
-		t.Fatalf("write file: %v", err)
-	}
-	if err := ensureEmptyDir(dir); !errors.Is(err, ErrDestinationExists) {
-		t.Fatalf("expected ErrDestinationExists, got %v", err)
-	}
-
-	locked := filepath.Join(t.TempDir(), "locked")
-	if err := os.Mkdir(locked, 0o000); err != nil {
-		t.Fatalf("mkdir locked: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chmod(locked, 0o755); err != nil {
-			t.Fatalf("restore locked dir: %v", err)
+	t.Run("outside root", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "demo")
+		requireNoError(t, os.MkdirAll(dir, 0o755))
+		if _, err := p.PackageDir(dir, io.Discard); err == nil || !strings.Contains(err.Error(), "outside root") {
+			t.Fatalf("expected outside root error, got %v", err)
 		}
 	})
-	if err := ensureEmptyDir(locked); err == nil {
-		t.Fatalf("expected read dir error")
-	}
+
+	t.Run("missing manifest", func(t *testing.T) {
+		dir := filepath.Join(root, "missing-manifest")
+		requireNoError(t, os.MkdirAll(dir, 0o755))
+		if _, err := p.PackageDir(dir, io.Discard); err == nil || !errors.Is(err, plugins.ErrManifestNotFound) {
+			t.Fatalf("expected manifest not found, got %v", err)
+		}
+	})
+
+	t.Run("invalid manifest json", func(t *testing.T) {
+		dir := filepath.Join(root, "bad-json")
+		requireNoError(t, os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755))
+		requireNoError(t, os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte("{"), 0o600))
+		if _, err := p.PackageDir(dir, io.Discard); err == nil || !strings.Contains(err.Error(), "decode manifest") {
+			t.Fatalf("expected decode manifest error, got %v", err)
+		}
+	})
+
+	t.Run("invalid manifest fields", func(t *testing.T) {
+		dir := filepath.Join(root, "invalid-fields")
+		writeManifest(t, dir, plugins.Manifest{Name: "Bad Name", Version: "1.0.0"})
+		if _, err := p.PackageDir(dir, io.Discard); err == nil || !strings.Contains(err.Error(), "invalid plugin name") {
+			t.Fatalf("expected plugin name error, got %v", err)
+		}
+	})
+
+	t.Run("writer failure", func(t *testing.T) {
+		dir := filepath.Join(root, "writer-failure")
+		writePlugin(t, dir)
+		fw := &failingWriter{err: errors.New("sink exploded")}
+		if _, err := p.PackageDir(dir, fw); err == nil || !strings.Contains(err.Error(), "sink exploded") {
+			t.Fatalf("expected write error, got %v", err)
+		}
+	})
+
+	t.Run("file without read permission", func(t *testing.T) {
+		dir := filepath.Join(root, "unreadable")
+		writePlugin(t, dir)
+		secret := filepath.Join(dir, "secret.txt")
+		requireNoError(t, os.WriteFile(secret, []byte("topsecret"), 0o600))
+		requireNoError(t, os.Chmod(secret, 0))
+		defer func() {
+			// best-effort cleanup; ignore inability to restore permissions
+			_ = os.Chmod(secret, 0o600) //nolint:errcheck
+		}()
+		if _, err := p.PackageDir(dir, io.Discard); err == nil {
+			t.Fatalf("expected unreadable file error")
+		}
+	})
+
+	t.Run("nil receiver", func(t *testing.T) {
+		var nilPackager *Packager
+		if _, err := nilPackager.PackageDir(root, io.Discard); err == nil || !strings.Contains(err.Error(), "instance is nil") {
+			t.Fatalf("expected instance is nil error, got %v", err)
+		}
+	})
 }
 
-func setupPlugin(t *testing.T, root, name string, entry []byte) string {
+func TestImportErrorCases(t *testing.T) {
+	root := t.TempDir()
+	p, err := NewPackager(root, nil)
+	requireNoError(t, err)
+
+	t.Run("corrupted gzip", func(t *testing.T) {
+		if _, err := p.Import(bytes.NewReader([]byte("not a gzip")), "broken"); err == nil {
+			t.Fatalf("expected gzip error")
+		}
+	})
+
+	t.Run("invalid tar stream", func(t *testing.T) {
+		var buf bytes.Buffer
+		gz := gzip.NewWriter(&buf)
+		if _, err := gz.Write([]byte("not tar")); err != nil {
+			t.Fatalf("write gzip: %v", err)
+		}
+		requireNoError(t, gz.Close())
+		if _, err := p.Import(bytes.NewReader(buf.Bytes()), "bad-tar"); err == nil {
+			t.Fatalf("expected tar error")
+		}
+	})
+
+	t.Run("absolute path entry", func(t *testing.T) {
+		archive := buildArchive(t, archiveEntry{header: tar.Header{Name: "/abs", Mode: 0o600, Size: int64(len("x"))}, body: []byte("x")})
+		if _, err := p.Import(bytes.NewReader(archive), "abs"); err == nil || !errors.Is(err, ErrUnsafeArchive) {
+			t.Fatalf("expected unsafe archive error, got %v", err)
+		}
+	})
+
+	t.Run("invalid file mode", func(t *testing.T) {
+		archive := buildArchive(t, archiveEntry{header: tar.Header{Name: "file.txt", Mode: 010000, Size: int64(len("x"))}, body: []byte("x")})
+		if _, err := p.Import(bytes.NewReader(archive), "badmode"); err == nil || !strings.Contains(err.Error(), "invalid file mode") {
+			t.Fatalf("expected file mode error, got %v", err)
+		}
+	})
+
+	t.Run("destination creation denied", func(t *testing.T) {
+		lockedRoot := t.TempDir()
+		requireNoError(t, os.Chmod(lockedRoot, 0o555))
+		lockedPackager, err := NewPackager(lockedRoot, nil)
+		requireNoError(t, err)
+		t.Cleanup(func() {
+			// best-effort cleanup; permissions may already be gone
+			_ = os.Chmod(lockedRoot, 0o755) //nolint:errcheck
+		})
+		archive := buildArchive(t, archiveEntry{header: tar.Header{Name: ".claude-plugin/plugin.json", Mode: 0o600, Size: int64(len("{}"))}, body: []byte("{}")})
+		if _, err := lockedPackager.Import(bytes.NewReader(archive), "locked"); err == nil {
+			t.Fatalf("expected permission error")
+		}
+	})
+
+	t.Run("destination is file", func(t *testing.T) {
+		fileRoot := t.TempDir()
+		conflict := filepath.Join(fileRoot, "demo")
+		requireNoError(t, os.WriteFile(conflict, []byte("x"), 0o600))
+		lockingPackager, err := NewPackager(fileRoot, nil)
+		requireNoError(t, err)
+		archive := buildArchive(t, archiveEntry{header: tar.Header{Name: ".claude-plugin/plugin.json", Mode: 0o600, Size: int64(len("{}"))}, body: []byte("{}")})
+		if _, err := lockingPackager.Import(bytes.NewReader(archive), "demo"); !errors.Is(err, ErrDestinationExists) {
+			t.Fatalf("expected destination exists for file, got %v", err)
+		}
+	})
+
+	t.Run("digest mismatch", func(t *testing.T) {
+		manifest := plugins.Manifest{Name: "demo", Version: "1.0.0", Digest: strings.Repeat("0", 64)}
+		data, err := json.Marshal(manifest)
+		requireNoError(t, err)
+		archive := buildArchive(t, archiveEntry{header: tar.Header{Name: ".claude-plugin/plugin.json", Mode: 0o600, Size: int64(len(data))}, body: data})
+		if _, err := p.Import(bytes.NewReader(archive), "digest"); err == nil || !strings.Contains(err.Error(), "manifest digest mismatch") {
+			t.Fatalf("expected digest mismatch, got %v", err)
+		}
+	})
+
+	t.Run("signature required", func(t *testing.T) {
+		store := plugins.NewTrustStore() // allowUnsigned defaults to false
+		requirer, err := NewPackager(t.TempDir(), store)
+		requireNoError(t, err)
+		manifest := plugins.Manifest{Name: "demo", Version: "1.0.0"}
+		data, err := json.Marshal(manifest)
+		requireNoError(t, err)
+		archive := buildArchive(t, archiveEntry{header: tar.Header{Name: ".claude-plugin/plugin.json", Mode: 0o600, Size: int64(len(data))}, body: data})
+		if _, err := requirer.Import(bytes.NewReader(archive), "unsigned"); err == nil || !strings.Contains(err.Error(), "unsigned plugins are rejected") {
+			t.Fatalf("expected unsigned rejection, got %v", err)
+		}
+	})
+}
+
+func TestRestoreEntryBranches(t *testing.T) {
+	dest := t.TempDir()
+	p, err := NewPackager(dest, nil)
+	requireNoError(t, err)
+
+	t.Run("creates directory", func(t *testing.T) {
+		header := &tar.Header{Name: "nested/dir", Mode: 0o700, Typeflag: tar.TypeDir}
+		requireNoError(t, p.restoreEntry(dest, header, bytes.NewReader(nil)))
+		info, err := os.Stat(filepath.Join(dest, "nested", "dir"))
+		requireNoError(t, err)
+		if !info.IsDir() {
+			t.Fatalf("expected directory")
+		}
+		if info.Mode().Perm() != 0o700 {
+			t.Fatalf("unexpected mode %v", info.Mode().Perm())
+		}
+	})
+
+	t.Run("copy failure", func(t *testing.T) {
+		header := &tar.Header{Name: "broken.txt", Mode: 0o644, Typeflag: tar.TypeReg}
+		errCopy := errors.New("copy failed")
+		if err := p.restoreEntry(dest, header, &errReader{err: errCopy}); err == nil || !strings.Contains(err.Error(), "copy failed") {
+			t.Fatalf("expected copy failure, got %v", err)
+		}
+	})
+
+	t.Run("unsupported type ignored", func(t *testing.T) {
+		header := &tar.Header{Name: "link", Mode: 0o644, Typeflag: tar.TypeSymlink}
+		if err := p.restoreEntry(dest, header, bytes.NewReader(nil)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("dot entry skipped", func(t *testing.T) {
+		header := &tar.Header{Name: ".", Mode: 0o755, Typeflag: tar.TypeDir}
+		if err := p.restoreEntry(dest, header, bytes.NewReader(nil)); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("target escapes dest", func(t *testing.T) {
+		dirtyDest := filepath.Join("..", "unsafe-root") // intentionally relative so prefix check fails
+		header := &tar.Header{Name: "escape", Mode: 0o644, Typeflag: tar.TypeReg}
+		if err := p.restoreEntry(dirtyDest, header, bytes.NewReader([]byte("x"))); err == nil || !errors.Is(err, ErrUnsafeArchive) {
+			t.Fatalf("expected unsafe archive, got %v", err)
+		}
+	})
+}
+
+func TestEnsureEmptyDirBranches(t *testing.T) {
+	t.Run("empty directory allowed", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "empty")
+		requireNoError(t, os.MkdirAll(dir, 0o755))
+		if err := ensureEmptyDir(dir); err != nil {
+			t.Fatalf("expected nil for empty dir, got %v", err)
+		}
+	})
+
+	t.Run("stat blocked", func(t *testing.T) {
+		parent := t.TempDir()
+		locked := filepath.Join(parent, "locked")
+		requireNoError(t, os.MkdirAll(locked, 0o700))
+		requireNoError(t, os.Chmod(locked, 0))
+		t.Cleanup(func() {
+			// best-effort cleanup for test temp dir
+			_ = os.Chmod(locked, 0o700) //nolint:errcheck
+		})
+		target := filepath.Join(locked, "child")
+		if err := ensureEmptyDir(target); err == nil {
+			t.Fatalf("expected stat error")
+		}
+	})
+
+	t.Run("readdir error", func(t *testing.T) {
+		locked := filepath.Join(t.TempDir(), "locked")
+		requireNoError(t, os.MkdirAll(locked, 0o300))
+		t.Cleanup(func() {
+			_ = os.Chmod(locked, 0o700) //nolint:errcheck // cleanup best effort
+		})
+		if err := ensureEmptyDir(locked); err == nil {
+			t.Fatalf("expected readdir error")
+		}
+	})
+}
+
+func writePlugin(t *testing.T, pluginDir string) {
 	t.Helper()
-	dir := filepath.Join(root, name)
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatalf("mkdir plugin: %v", err)
-	}
-	entryPath := filepath.Join(dir, "main.sh")
-	if err := os.WriteFile(entryPath, entry, 0600); err != nil {
-		t.Fatalf("write entry: %v", err)
-	}
-	mf := plugins.Manifest{Name: name, Version: "1.0.0", Entrypoint: "main.sh", Digest: sha256Bytes(entry)}
-	data, err := yaml.Marshal(mf)
+	requireNoError(t, os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755))
+	requireNoError(t, os.WriteFile(filepath.Join(pluginDir, "README.md"), []byte("demo"), 0o600))
+	mf := plugins.Manifest{Name: "demo", Version: "1.0.0"}
+	data, err := json.Marshal(mf)
 	if err != nil {
-		t.Fatalf("marshal manifest: %v", err)
+		t.Fatalf("marshal: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, "manifest.yaml"), data, 0600); err != nil {
-		t.Fatalf("write manifest: %v", err)
+	requireNoError(t, os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), data, 0o600))
+}
+
+func requireNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
 	}
-	return dir
+}
+
+func writeManifest(t *testing.T, pluginDir string, manifest plugins.Manifest) {
+	t.Helper()
+	requireNoError(t, os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755))
+	data, err := json.Marshal(manifest)
+	requireNoError(t, err)
+	requireNoError(t, os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), data, 0o600))
 }
 
 type failingWriter struct {
 	err error
 }
 
-func (w failingWriter) Write([]byte) (int, error) {
-	if w.err == nil {
-		return 0, errors.New("writer failure")
-	}
-	return 0, w.err
+func (f *failingWriter) Write(_ []byte) (int, error) {
+	return 0, f.err
 }
 
-func writeTarFile(t *testing.T, tw *tar.Writer, name string, data []byte, mode int64) {
+type errReader struct {
+	err error
+}
+
+func (e *errReader) Read(_ []byte) (int, error) {
+	return 0, e.err
+}
+
+type archiveEntry struct {
+	header tar.Header
+	body   []byte
+}
+
+func buildArchive(t *testing.T, entries ...archiveEntry) []byte {
 	t.Helper()
-	header := &tar.Header{Name: name, Mode: mode, Size: int64(len(data))}
-	if err := tw.WriteHeader(header); err != nil {
-		t.Fatalf("write header: %v", err)
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, e := range entries {
+		h := e.header
+		if h.Size == 0 {
+			h.Size = int64(len(e.body))
+		}
+		requireNoError(t, tw.WriteHeader(&h))
+		if len(e.body) > 0 {
+			if _, err := tw.Write(e.body); err != nil {
+				t.Fatalf("write body: %v", err)
+			}
+		}
 	}
-	if _, err := tw.Write(data); err != nil {
-		t.Fatalf("write content: %v", err)
-	}
-}
-
-type errReader struct{}
-
-func (errReader) Read([]byte) (int, error) {
-	return 0, errors.New("reader failure")
+	requireNoError(t, tw.Close())
+	requireNoError(t, gz.Close())
+	return buf.Bytes()
 }

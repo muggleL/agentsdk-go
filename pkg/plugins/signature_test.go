@@ -16,7 +16,7 @@ func TestTrustStoreVerifiesSignature(t *testing.T) {
 	store := NewTrustStore()
 	store.Register("dev", pub)
 
-	mf := &Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main", Digest: hex.EncodeToString(make([]byte, sha256.Size)), Signer: "dev"}
+	mf := &Manifest{Name: "demo", Version: "1.0.0", Digest: hex.EncodeToString(make([]byte, sha256.Size)), Signer: "dev"}
 	payload, err := CanonicalManifestBytes(mf)
 	require.NoError(t, err)
 	hash := sha256.Sum256(payload)
@@ -31,7 +31,7 @@ func TestTrustStoreBlocksDigest(t *testing.T) {
 	store.AllowUnsigned(true)
 	store.BlockDigest("deadbeef")
 
-	mf := &Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main", Digest: "deadbeef"}
+	mf := &Manifest{Name: "demo", Version: "1.0.0", Digest: "deadbeef"}
 	payload, err := CanonicalManifestBytes(mf)
 	require.NoError(t, err)
 	err = store.Verify(mf, payload)
@@ -51,7 +51,7 @@ func TestVerifyUnknownSignerAndBadSignature(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(nil)
 	require.NoError(t, err)
 	store.Register("dev", pub)
-	mf := &Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main", Digest: hex.EncodeToString(make([]byte, sha256.Size)), Signer: "unknown", Signature: ""}
+	mf := &Manifest{Name: "demo", Version: "1.0.0", Digest: hex.EncodeToString(make([]byte, sha256.Size)), Signer: "unknown", Signature: ""}
 	payload, err := CanonicalManifestBytes(mf)
 	require.NoError(t, err)
 	require.Error(t, store.Verify(mf, payload))
@@ -74,8 +74,13 @@ func TestVerifyUnknownSignerAndBadSignature(t *testing.T) {
 func TestVerifyAllowsUnsignedWhenConfigured(t *testing.T) {
 	store := NewTrustStore()
 	store.AllowUnsigned(true)
-	mf := &Manifest{Name: "demo", Version: "1.0.0", Entrypoint: "main", Digest: hex.EncodeToString(make([]byte, sha256.Size))}
+	mf := &Manifest{Name: "demo", Version: "1.0.0", Digest: hex.EncodeToString(make([]byte, sha256.Size))}
 	payload, err := CanonicalManifestBytes(mf)
 	require.NoError(t, err)
 	require.NoError(t, store.Verify(mf, payload))
+}
+
+func TestSignManifestNilError(t *testing.T) {
+	_, err := SignManifest(nil, nil)
+	require.Error(t, err)
 }
