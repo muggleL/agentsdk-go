@@ -232,7 +232,8 @@ The SDK uses the `.claude/` directory for configuration, compatible with Claude 
 
 ```
 .claude/
-├── config.yaml       # Project configuration
+├── settings.json     # Project configuration
+├── settings.local.json  # Local overrides (gitignored)
 ├── skills/           # Skills definitions
 ├── commands/         # Slash command definitions
 ├── agents/           # Subagents definitions
@@ -241,20 +242,19 @@ The SDK uses the `.claude/` directory for configuration, compatible with Claude 
 
 ### Configuration Example
 
-```yaml
-version: "1.0"
-model: "claude-sonnet-4-5"
-
-sandbox:
-  enabled: true
-  allowed_paths: ["/tmp", "./workspace"]
-  network_allow: ["*.example.com"]
-
-mcp:
-  servers:
-    - name: "filesystem"
-      command: "node"
-      args: ["mcp-server-filesystem.js"]
+```json
+{
+  "permissions": {
+    "allow": ["Bash(ls:*)", "Bash(pwd:*)"],
+    "deny": ["Read(.env)", "Read(secrets/**)"]
+  },
+  "env": {
+    "MY_VAR": "value"
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}
 ```
 
 ## HTTP API

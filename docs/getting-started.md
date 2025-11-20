@@ -293,32 +293,29 @@ SDK 使用 `.claude/` 目录管理配置：
 
 ```
 .claude/
-├── config.yaml           # 主配置文件
+├── settings.json         # 主配置文件
+├── settings.local.json   # 本地覆盖（已加入 .gitignore）
 ├── skills/               # Skills 定义
 ├── commands/             # 斜杠命令定义
 ├── agents/               # Subagents 定义
 └── plugins/              # 插件目录
 ```
 
-### config.yaml 示例
+### settings.json 示例
 
-```yaml
-version: "1.0"
-model: "claude-sonnet-4-5"
-
-sandbox:
-  enabled: true
-  allowed_paths:
-    - "/tmp"
-    - "./workspace"
-  network_allow:
-    - "*.anthropic.com"
-
-mcp:
-  servers:
-    - name: "filesystem"
-      command: "node"
-      args: ["mcp-server-filesystem.js"]
+```json
+{
+  "permissions": {
+    "allow": ["Bash(ls:*)", "Bash(pwd:*)"],
+    "deny": ["Read(.env)", "Read(secrets/**)"]
+  },
+  "env": {
+    "MY_VAR": "value"
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}
 ```
 
 ### 配置加载

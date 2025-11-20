@@ -232,7 +232,8 @@ SDK 使用 `.claude/` 目录进行配置，与 Claude Code 兼容：
 
 ```
 .claude/
-├── config.yaml       # 项目配置
+├── settings.json     # 项目配置
+├── settings.local.json  # 本地覆盖（已加入 .gitignore）
 ├── skills/           # Skills 定义
 ├── commands/         # 斜杠命令定义
 ├── agents/           # Subagents 定义
@@ -241,20 +242,19 @@ SDK 使用 `.claude/` 目录进行配置，与 Claude Code 兼容：
 
 ### 配置示例
 
-```yaml
-version: "1.0"
-model: "claude-sonnet-4-5"
-
-sandbox:
-  enabled: true
-  allowed_paths: ["/tmp", "./workspace"]
-  network_allow: ["*.example.com"]
-
-mcp:
-  servers:
-    - name: "filesystem"
-      command: "node"
-      args: ["mcp-server-filesystem.js"]
+```json
+{
+  "permissions": {
+    "allow": ["Bash(ls:*)", "Bash(pwd:*)"],
+    "deny": ["Read(.env)", "Read(secrets/**)"]
+  },
+  "env": {
+    "MY_VAR": "value"
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}
 ```
 
 ## HTTP API

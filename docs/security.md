@@ -30,18 +30,23 @@ SDK 采用三层防御架构：
 
 ### 配置示例
 
-在 `.claude/config.yaml` 中配置沙箱策略：
+在 `.claude/settings.json` 中配置沙箱策略：
 
-```yaml
-sandbox:
-  enabled: true
-  allowed_paths:
-    - "/tmp"
-    - "./workspace"
-    - "/var/lib/agent/data"
-  network_allow:
-    - "*.anthropic.com"
-    - "api.example.com"
+```json
+{
+  "sandbox": {
+    "enabled": true,
+    "allowed_paths": [
+      "/tmp",
+      "./workspace",
+      "/var/lib/agent/data"
+    ],
+    "network_allow": [
+      "*.anthropic.com",
+      "api.example.com"
+    ]
+  }
+}
 ```
 
 ### 代码示例

@@ -188,7 +188,7 @@ Key components:
   - `glob` - File pattern matching
 - MCP client support for external tools
 
-**Important**: Tool execution validates parameters against JSON Schema before invocation to catch errors early. All built-in tools respect sandbox policies configured in `.claude/config.yaml`.
+**Important**: Tool execution validates parameters against JSON Schema before invocation to catch errors early. All built-in tools respect sandbox policies configured in `.claude/settings.json`.
 
 ### Middleware System
 
@@ -218,11 +218,36 @@ In-memory message store with:
 The SDK follows Claude Code's `.claude/` directory structure:
 ```
 .claude/
-├── config.yaml       # Project configuration
+├── settings.json       # Project configuration
+├── settings.local.json # Developer overrides (gitignored)
 ├── skills/           # Skills definitions
 ├── commands/         # Slash commands
 ├── agents/           # Subagents definitions
 └── plugins/          # Plugin directory
+```
+
+Configuration precedence (highest → lowest):
+1. Enterprise managed policies
+2. CLI arguments
+3. .claude/settings.local.json
+4. .claude/settings.json
+5. ~/.claude/settings.json
+
+Example `settings.json` (official schema):
+
+```json
+{
+  "permissions": {
+    "allow": ["Bash(ls:*)", "Bash(pwd:*)"],
+    "deny": ["Read(.env)", "Read(secrets/**)"]
+  },
+  "env": {
+    "MY_VAR": "value"
+  },
+  "sandbox": {
+    "enabled": false
+  }
+}
 ```
 
 Hot-reload support via `fsnotify` for configuration changes.
@@ -332,16 +357,21 @@ Supports Model Context Protocol for external tools:
 - stdio transport (for local processes)
 - SSE transport (for HTTP servers)
 - Automatic tool registration from MCP servers
-- Configurable via `.claude/config.yaml` or `--mcp` CLI flag
+- Configurable via `.claude/settings.json` or `--mcp` CLI flag
 
 Example:
-```yaml
-# .claude/config.yaml
-mcp:
-  servers:
-    - name: "my-server"
-      command: "node"
-      args: ["server.js"]
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "my-server",
+        "command": "node",
+        "args": ["server.js"]
+      }
+    ]
+  }
+}
 ```
 
 ## Entry Points
