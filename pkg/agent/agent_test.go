@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -62,6 +63,18 @@ func (t *stubTools) Execute(ctx context.Context, call ToolCall, _ *Context) (Too
 		return ToolResult{Name: call.Name}, t.err
 	}
 	return ToolResult{Name: call.Name, Output: "ok"}, nil
+}
+
+type errorAwareModel struct {
+	calls int
+}
+
+func (m *errorAwareModel) Generate(_ context.Context, c *Context) (*ModelOutput, error) {
+	m.calls++
+	if len(c.ToolResults) == 0 {
+		return &ModelOutput{ToolCalls: []ToolCall{{ID: "call-1", Name: "flaky-tool"}}}, nil
+	}
+	return &ModelOutput{Content: "done after error", Done: true}, nil
 }
 
 func middlewareRecorder(log *[]string) middleware.Middleware {
@@ -352,12 +365,15 @@ func TestRunToolExecutionError(t *testing.T) {
 	sentinel := errors.New("tool exec fail")
 	model := &scriptedModel{outputs: []*ModelOutput{{ToolCalls: []ToolCall{{Name: "call"}}}}}
 	tools := &stubTools{err: sentinel}
-	ag, err := New(model, tools, Options{})
+	ag, err := New(model, tools, Options{MaxIterations: 1})
 	if err != nil {
 		t.Fatalf("new agent: %v", err)
 	}
-	if _, err := ag.Run(context.Background(), nil); !errors.Is(err, sentinel) {
-		t.Fatalf("expected sentinel, got %v", err)
+	if _, err := ag.Run(context.Background(), nil); !errors.Is(err, ErrMaxIterations) {
+		t.Fatalf("expected max iteration error, got %v", err)
+	}
+	if len(tools.calls) != 1 {
+		t.Fatalf("expected tool to be invoked once, got %d", len(tools.calls))
 	}
 }
 
@@ -375,5 +391,50 @@ func TestRunAfterToolMiddlewareError(t *testing.T) {
 	}
 	if _, err := ag.Run(context.Background(), nil); !errors.Is(err, sentinel) {
 		t.Fatalf("expected sentinel, got %v", err)
+	}
+}
+
+func TestAgent_Run_ToolExecutionError(t *testing.T) {
+	cases := []struct {
+		name    string
+		toolErr error
+	}{
+		{name: "continues after tool failure", toolErr: errors.New("tool execution failed")},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			model := &errorAwareModel{}
+			tools := &stubTools{err: tc.toolErr}
+			ctx := NewContext()
+
+			ag, err := New(model, tools, Options{})
+			if err != nil {
+				t.Fatalf("new agent: %v", err)
+			}
+
+			out, runErr := ag.Run(context.Background(), ctx)
+			if runErr != nil {
+				t.Fatalf("run returned error: %v", runErr)
+			}
+			if out == nil || !out.Done {
+				t.Fatalf("expected final output with Done=true, got %+v", out)
+			}
+			if model.calls != 2 {
+				t.Fatalf("expected model to run twice, got %d", model.calls)
+			}
+
+			if len(ctx.ToolResults) != 1 {
+				t.Fatalf("tool results length mismatch: %d", len(ctx.ToolResults))
+			}
+			result := ctx.ToolResults[0]
+			if result.Metadata == nil || result.Metadata["is_error"] != true {
+				t.Fatalf("expected is_error metadata flag, got %+v", result.Metadata)
+			}
+			if !strings.Contains(result.Output, tc.toolErr.Error()) {
+				t.Fatalf("expected error message in output, got %q", result.Output)
+			}
+		})
 	}
 }

@@ -90,9 +90,15 @@ func (a *Agent) Run(ctx context.Context, c *Context) (*ModelOutput, error) {
 		defer cancel()
 	}
 
+	stateValues := map[string]any{}
+	if len(c.Values) > 0 {
+		for k, v := range c.Values {
+			stateValues[k] = v
+		}
+	}
 	state := &middleware.State{
 		Agent:  c,
-		Values: map[string]any{},
+		Values: stateValues,
 	}
 	ctx = context.WithValue(ctx, model.MiddlewareStateKey, state)
 
@@ -155,7 +161,13 @@ func (a *Agent) Run(ctx context.Context, c *Context) (*ModelOutput, error) {
 
 			res, err := a.tools.Execute(ctx, call, c)
 			if err != nil {
-				return last, err
+				res = ToolResult{
+					Name:   call.Name,
+					Output: fmt.Sprintf("Tool execution failed: %v", err),
+					Metadata: map[string]any{
+						"is_error": true,
+					},
+				}
 			}
 
 			c.ToolResults = append(c.ToolResults, res)

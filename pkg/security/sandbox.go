@@ -19,6 +19,7 @@ type Sandbox struct {
 	allowList []string
 	validator *Validator
 	resolver  *PathResolver
+	disabled  bool // When true, all validation is skipped
 }
 
 // NewSandbox creates a sandbox rooted at workDir.
@@ -31,6 +32,15 @@ func NewSandbox(workDir string) *Sandbox {
 		allowList: []string{root},
 		validator: NewValidator(),
 		resolver:  NewPathResolver(),
+		disabled:  false,
+	}
+}
+
+// NewDisabledSandbox creates a sandbox that skips all validation.
+// Used when sandbox is explicitly disabled in configuration.
+func NewDisabledSandbox() *Sandbox {
+	return &Sandbox{
+		disabled: true,
 	}
 }
 
@@ -60,6 +70,10 @@ func (s *Sandbox) Allow(path string) {
 
 // ValidatePath ensures the path resolves within the sandbox allow list.
 func (s *Sandbox) ValidatePath(path string) error {
+	if s != nil && s.disabled {
+		return nil
+	}
+
 	if strings.TrimSpace(path) == "" {
 		return fmt.Errorf("security: empty path supplied")
 	}
@@ -86,6 +100,10 @@ func (s *Sandbox) ValidatePath(path string) error {
 
 // ValidateCommand is the second defense line, preventing obviously dangerous commands.
 func (s *Sandbox) ValidateCommand(cmd string) error {
+	if s != nil && s.disabled {
+		return nil
+	}
+
 	if err := s.validator.Validate(cmd); err != nil {
 		return fmt.Errorf("security: %w", err)
 	}

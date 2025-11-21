@@ -94,6 +94,33 @@ func TestCompleteBuildsRequestAndParsesToolUse(t *testing.T) {
 	}
 }
 
+func TestAnthropic_DefaultMaxRetries(t *testing.T) {
+	cases := []struct {
+		name       string
+		maxRetries int
+	}{
+		{name: "zero uses default", maxRetries: 0},
+		{name: "negative uses default", maxRetries: -3},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			mdl, err := NewAnthropic(AnthropicConfig{APIKey: "k", MaxRetries: tc.maxRetries})
+			if err != nil {
+				t.Fatalf("new anthropic model: %v", err)
+			}
+			am, ok := mdl.(*anthropicModel)
+			if !ok {
+				t.Fatalf("expected anthropicModel, got %T", mdl)
+			}
+			if am.maxRetries != 10 {
+				t.Fatalf("expected default maxRetries=10, got %d", am.maxRetries)
+			}
+		})
+	}
+}
+
 func TestRetryOnTransientError(t *testing.T) {
 	calls := 0
 	mock := &fakeMessages{
@@ -121,6 +148,103 @@ func TestRetryOnTransientError(t *testing.T) {
 	}
 	if resp.Message.Content != "ok" {
 		t.Fatalf("unexpected content: %q", resp.Message.Content)
+	}
+}
+
+func TestAnthropic_NetworkErrorRetry(t *testing.T) {
+	cases := []struct {
+		name        string
+		maxRetries  int
+		failures    int
+		expectCalls int
+		expectErr   bool
+	}{
+		{name: "retries transient network error", maxRetries: 2, failures: 1, expectCalls: 2, expectErr: false},
+		{name: "stops after max retries", maxRetries: 2, failures: 3, expectCalls: 3, expectErr: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			model := &anthropicModel{maxRetries: tc.maxRetries}
+			runErr := model.doWithRetry(context.Background(), func(context.Context) error {
+				calls++
+				if calls <= tc.failures {
+					return tempNetErr{}
+				}
+				return nil
+			})
+
+			if tc.expectErr {
+				var netErr net.Error
+				if runErr == nil || !errors.As(runErr, &netErr) {
+					t.Fatalf("expected network error, got %v", runErr)
+				}
+			} else if runErr != nil {
+				t.Fatalf("expected retry to succeed, got %v", runErr)
+			}
+			if calls != tc.expectCalls {
+				t.Fatalf("expected %d attempts, got %d", tc.expectCalls, calls)
+			}
+		})
+	}
+}
+
+func TestAnthropic_400ErrorRetry(t *testing.T) {
+	const maxRetries = 3
+	errBadRequest := &anthropicsdk.Error{StatusCode: http.StatusBadRequest}
+
+	cases := []struct {
+		name string
+	}{
+		{name: "bad request is retried"},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			model := &anthropicModel{maxRetries: maxRetries}
+			err := model.doWithRetry(context.Background(), func(context.Context) error {
+				calls++
+				return errBadRequest
+			})
+			if !errors.Is(err, errBadRequest) {
+				t.Fatalf("expected final error %v, got %v", errBadRequest, err)
+			}
+			if retries := calls - 1; retries != maxRetries {
+				t.Fatalf("expected %d retries (calls=%d)", maxRetries, calls)
+			}
+		})
+	}
+}
+
+func TestAnthropic_401NoRetry(t *testing.T) {
+	cases := []struct {
+		name       string
+		maxRetries int
+	}{
+		{name: "unauthorized stops immediately", maxRetries: 5},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			unauthorized := &anthropicsdk.Error{StatusCode: http.StatusUnauthorized}
+			model := &anthropicModel{maxRetries: tc.maxRetries}
+			err := model.doWithRetry(context.Background(), func(context.Context) error {
+				calls++
+				return unauthorized
+			})
+			if !errors.Is(err, unauthorized) {
+				t.Fatalf("expected unauthorized error, got %v", err)
+			}
+			if calls != 1 {
+				t.Fatalf("expected no retries, got %d calls", calls)
+			}
+		})
 	}
 }
 
@@ -248,6 +372,7 @@ func TestProviderEnvFallbackAndCache(t *testing.T) {
 }
 
 func TestProviderMissingAPIKey(t *testing.T) {
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_API_KEY", "")
 	p := &AnthropicProvider{}
 	if _, err := p.Model(context.Background()); err == nil {
@@ -367,6 +492,8 @@ func TestAdditionalBranches(t *testing.T) {
 }
 
 func TestAdditionalBranchesII(t *testing.T) {
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
+	setEnv(t, "ANTHROPIC_API_KEY", "")
 	if err := (&anthropicModel{}).CompleteStream(context.Background(), Request{}, nil); err == nil {
 		t.Fatal("expected error when callback is nil")
 	}
@@ -405,13 +532,42 @@ func TestAdditionalBranchesII(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected *anthropicModel, got %T", cfgModel)
 	}
-	if am.maxTokens != 4096 || am.maxRetries != 0 {
+	if am.maxTokens != 4096 || am.maxRetries != 10 {
 		t.Fatalf("defaults not applied: %+v", am)
 	}
 
 	if val := (&AnthropicProvider{APIKey: "abc"}).resolveAPIKey(); val != "abc" {
 		t.Fatalf("resolveAPIKey should prefer explicit value, got %s", val)
 	}
+}
+
+func TestResolveAPIKeyPriority(t *testing.T) {
+	t.Run("auth token wins", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_AUTH_TOKEN", "  auth-token  ")
+		t.Setenv("ANTHROPIC_API_KEY", "api-key")
+		val := (&AnthropicProvider{APIKey: "cfg-key"}).resolveAPIKey()
+		if val != "auth-token" {
+			t.Fatalf("expected ANTHROPIC_AUTH_TOKEN to win, got %s", val)
+		}
+	})
+
+	t.Run("api key when auth token missing", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+		t.Setenv("ANTHROPIC_API_KEY", "  api-key  ")
+		val := (&AnthropicProvider{APIKey: "cfg-key"}).resolveAPIKey()
+		if val != "api-key" {
+			t.Fatalf("expected ANTHROPIC_API_KEY to win, got %s", val)
+		}
+	})
+
+	t.Run("fallback to explicit config", func(t *testing.T) {
+		t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
+		t.Setenv("ANTHROPIC_API_KEY", "")
+		val := (&AnthropicProvider{APIKey: " cfg-key "}).resolveAPIKey()
+		if val != "cfg-key" {
+			t.Fatalf("expected explicit APIKey to be used, got %s", val)
+		}
+	})
 }
 
 func TestStreamUnavailable(t *testing.T) {
@@ -508,6 +664,7 @@ func TestExtractToolCallNil(t *testing.T) {
 
 func TestCustomHeadersDisabled(t *testing.T) {
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "false")
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_API_KEY", "env-key")
 	defaults := map[string]string{"User-Agent": "custom-client"}
 	overrides := map[string]string{"X-App": "user-app"}
@@ -534,6 +691,7 @@ func TestCustomHeadersDisabled(t *testing.T) {
 
 func TestCustomHeadersEnabled(t *testing.T) {
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", " TrUe ")
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_API_KEY", "env-two")
 	if !anthropicCustomHeadersEnabled() {
 		t.Fatal("custom headers gate should be enabled")
@@ -579,6 +737,7 @@ func TestCustomHeadersMergePriority(t *testing.T) {
 }
 
 func TestCustomHeadersAPIKeySource(t *testing.T) {
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
 	setEnv(t, "ANTHROPIC_API_KEY", "real-key")
 	overrides := map[string]string{"X-API-Key": "user"}
@@ -605,7 +764,24 @@ func TestCustomHeadersAPIKeySource(t *testing.T) {
 	}
 }
 
+func TestCustomHeadersAuthTokenPriority(t *testing.T) {
+	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "auth-token")
+	setEnv(t, "ANTHROPIC_API_KEY", "api-key")
+	headers := newAnthropicHeaders(nil, nil)
+	if headers["x-api-key"] != "auth-token" {
+		t.Fatalf("expected ANTHROPIC_AUTH_TOKEN to win, got %+v", headers)
+	}
+
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
+	headers = newAnthropicHeaders(nil, nil)
+	if headers["x-api-key"] != "api-key" {
+		t.Fatalf("expected ANTHROPIC_API_KEY when auth token missing, got %+v", headers)
+	}
+}
+
 func TestCustomHeadersUserOverridePredefined(t *testing.T) {
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
 	setEnv(t, "ANTHROPIC_API_KEY", "override-key")
 	overrides := map[string]string{"X-App": "user-app", "Anthropic-Version": "2099-01-01"}
@@ -625,6 +801,7 @@ func TestCustomHeadersUserOverridePredefined(t *testing.T) {
 }
 
 func TestCustomHeadersCompleteAppliesHeaders(t *testing.T) {
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
 	setEnv(t, "ANTHROPIC_API_KEY", "complete-key")
 	mock := &fakeMessages{
@@ -649,6 +826,7 @@ func TestCustomHeadersCompleteAppliesHeaders(t *testing.T) {
 }
 
 func TestCustomHeadersCompleteStreamAppliesHeaders(t *testing.T) {
+	setEnv(t, "ANTHROPIC_AUTH_TOKEN", "")
 	setEnv(t, "ANTHROPIC_CUSTOM_HEADERS_ENABLED", "true")
 	setEnv(t, "ANTHROPIC_API_KEY", "stream-key")
 	decoder := &sequenceDecoder{}

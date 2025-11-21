@@ -64,10 +64,13 @@ func (p *AnthropicProvider) Model(ctx context.Context) (Model, error) {
 }
 
 func (p *AnthropicProvider) resolveAPIKey() string {
-	if strings.TrimSpace(p.APIKey) != "" {
-		return strings.TrimSpace(p.APIKey)
+	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")); key != "" {
+		return key
 	}
-	return strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); key != "" {
+		return key
+	}
+	return strings.TrimSpace(p.APIKey)
 }
 
 func (p *AnthropicProvider) cachedModel() Model {

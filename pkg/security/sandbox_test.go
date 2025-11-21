@@ -400,3 +400,65 @@ func mustGetwd(t *testing.T) string {
 	}
 	return wd
 }
+
+func TestNewDisabledSandbox(t *testing.T) {
+	t.Parallel()
+	sb := NewDisabledSandbox()
+
+	// Disabled sandbox should allow any path
+	if err := sb.ValidatePath("/nonexistent/path/anywhere"); err != nil {
+		t.Fatalf("disabled sandbox should allow any path, got error: %v", err)
+	}
+
+	// Disabled sandbox should allow any command
+	if err := sb.ValidateCommand("rm -rf /"); err != nil {
+		t.Fatalf("disabled sandbox should allow any command, got error: %v", err)
+	}
+
+	// Disabled sandbox should allow metacharacters
+	if err := sb.ValidateCommand("ls | grep foo && rm -rf *"); err != nil {
+		t.Fatalf("disabled sandbox should allow metacharacters, got error: %v", err)
+	}
+}
+
+func TestDisabledSandboxSkipsValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		testPath string
+		testCmd  string
+	}{
+		{
+			name:     "arbitrary absolute path",
+			testPath: "/etc/passwd",
+			testCmd:  "cat /etc/passwd",
+		},
+		{
+			name:     "relative traversal",
+			testPath: "../../../etc/shadow",
+			testCmd:  "echo dangerous > ../../../etc/shadow",
+		},
+		{
+			name:     "destructive command",
+			testPath: "/tmp/test",
+			testCmd:  "rm -rf / --no-preserve-root",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sb := NewDisabledSandbox()
+
+			// Path validation should pass
+			if err := sb.ValidatePath(tt.testPath); err != nil {
+				t.Fatalf("disabled sandbox path check failed: %v", err)
+			}
+
+			// Command validation should pass
+			if err := sb.ValidateCommand(tt.testCmd); err != nil {
+				t.Fatalf("disabled sandbox command check failed: %v", err)
+			}
+		})
+	}
+}

@@ -85,9 +85,15 @@ func newAnthropicHeaders(defaults, overrides map[string]string) map[string]strin
 	merge(merged, defaults)
 	merge(merged, overrides)
 
-	if apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); apiKey != "" {
+	authToken := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN"))
+	apiKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY"))
+
+	switch {
+	case authToken != "":
+		merged["x-api-key"] = authToken
+	case apiKey != "":
 		merged["x-api-key"] = apiKey
-	} else {
+	default:
 		delete(merged, "x-api-key")
 	}
 	if len(merged) == 0 {
@@ -131,8 +137,8 @@ func NewAnthropic(cfg AnthropicConfig) (Model, error) {
 		maxTokens = 4096
 	}
 	retries := cfg.MaxRetries
-	if retries < 0 {
-		retries = 0
+	if retries <= 0 {
+		retries = 10
 	}
 
 	return &anthropicModel{
@@ -321,8 +327,7 @@ func isRetryable(err error) bool {
 	}
 	var apiErr *anthropicsdk.Error
 	if errors.As(err, &apiErr) {
-		code := apiErr.StatusCode
-		return code == http.StatusTooManyRequests || code >= 500
+		return apiErr.StatusCode != http.StatusUnauthorized
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
@@ -332,7 +337,7 @@ func isRetryable(err error) bool {
 		//nolint:staticcheck // Temporary is deprecated but retained to treat non-timeout transient errors as retryable (tests rely on this behaviour).
 		return netErr.Temporary()
 	}
-	return false
+	return true
 }
 
 func (m *anthropicModel) selectModel(override string) anthropicsdk.Model {
