@@ -384,8 +384,11 @@ func TestHelperBranches(t *testing.T) {
 	if !isRetryable(&anthropicsdk.Error{StatusCode: http.StatusTooManyRequests}) {
 		t.Fatal("expected 429 to be retryable")
 	}
-	if isRetryable(&anthropicsdk.Error{StatusCode: http.StatusBadRequest}) {
-		t.Fatal("400 should not be retryable")
+	if !isRetryable(&anthropicsdk.Error{StatusCode: http.StatusBadRequest}) {
+		t.Fatal("expected 400 to be retryable")
+	}
+	if isRetryable(&anthropicsdk.Error{StatusCode: http.StatusUnauthorized}) {
+		t.Fatal("expected 401 to not be retryable")
 	}
 
 	usage := usageFromFallback(anthropicsdk.Usage{InputTokens: 2, OutputTokens: 3, CacheCreationInputTokens: 1, CacheReadInputTokens: 1}, Usage{})
