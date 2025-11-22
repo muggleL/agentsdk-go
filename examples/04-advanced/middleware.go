@@ -29,7 +29,7 @@ func buildMiddlewares(cfg runConfig, logger *slog.Logger) middlewareBundle {
 		monitor,
 	}
 	if cfg.enableTrace {
-		items = append(items, middleware.NewTraceMiddleware(cfg.traceDir))
+		items = append(items, middleware.NewTraceMiddleware(cfg.traceDir, middleware.WithSkillTracing(cfg.traceSkills)))
 	}
 	return middlewareBundle{items: items, monitor: monitor, traceDir: cfg.traceDir}
 }

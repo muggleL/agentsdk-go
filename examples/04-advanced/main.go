@@ -38,6 +38,7 @@ type runConfig struct {
 	enablePlugins     bool
 	enableTrace       bool
 	traceDir          string
+	traceSkills       bool
 	slowThreshold     time.Duration
 	toolLatency       time.Duration
 	runTimeout        time.Duration
@@ -93,11 +94,12 @@ func main() {
 		MCPServers:        buildMCPServers(cfg, logger),
 	}
 
-	if cfg.enableHooks {
-		opts.TypedHooks = hooks.handlers
-		opts.HookMiddleware = hooks.mw
-		opts.HookTimeout = cfg.hookTimeout
-	}
+	// Legacy in-process hooks have been replaced by shell-based ShellHook.
+	// if cfg.enableHooks {
+	// 	opts.TypedHooks = hooks.handlers
+	// 	opts.HookMiddleware = hooks.mw
+	// 	opts.HookTimeout = cfg.hookTimeout
+	// }
 
 	if cfg.enableSkills {
 		opts.Skills = buildSkills()
@@ -179,6 +181,7 @@ func parseConfig() runConfig {
 	flag.BoolVar(&cfg.enablePlugins, "enable-plugins", true, "discover .claude-plugin")
 	flag.BoolVar(&cfg.enableTrace, "enable-trace", true, "record trace middleware output")
 	flag.StringVar(&cfg.traceDir, "trace-dir", "trace-out", "trace output directory")
+	flag.BoolVar(&cfg.traceSkills, "trace-skills", false, "log skill body lengths before/after agent run")
 	flag.DurationVar(&cfg.slowThreshold, "slow-threshold", 250*time.Millisecond, "slow request threshold")
 	flag.DurationVar(&cfg.toolLatency, "tool-latency", 150*time.Millisecond, "simulated tool latency")
 	flag.DurationVar(&cfg.runTimeout, "timeout", 5*time.Second, "agent timeout")
