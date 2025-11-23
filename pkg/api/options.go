@@ -181,15 +181,15 @@ type Response struct {
 	CommandResults  []CommandExecution
 	Subagent        *subagents.Result
 	HookEvents      []coreevents.Event
-	ProjectConfig   *config.Settings // legacy alias for Config(); kept for compatibility
+	// Deprecated: Use Settings instead. Kept for backward compatibility.
+	ProjectConfig   *config.Settings
 	Settings        *config.Settings
 	Plugins         []PluginSnapshot
 	SandboxSnapshot SandboxReport
 	Tags            map[string]string
 }
 
-// Result mirrors the legacy agent.RunResult struct so downstream callers stay
-// compatible without pulling in deprecated dependencies.
+// Result represents the agent execution result.
 type Result struct {
 	Output     string
 	StopReason string
@@ -391,8 +391,7 @@ func defaultHookRecorder() *hookRecorder {
 	return &hookRecorder{}
 }
 
-// runtimeHookAdapter keeps compatibility with the legacy agent hook contract
-// without importing the removed pkg/agent v1 package.
+// runtimeHookAdapter wraps the hook executor and recorder.
 type runtimeHookAdapter struct {
 	executor *corehooks.Executor
 	recorder HookRecorder
