@@ -257,9 +257,8 @@ func TestRegisterToolsDisablesAllBuiltinsWhenEmptyWhitelist(t *testing.T) {
 	registry := tool.NewRegistry()
 	root := t.TempDir()
 	opts := Options{ProjectRoot: root, EnabledBuiltinTools: []string{}}
-	if taskTool, err := registerTools(registry, opts, nil, nil, nil); err != nil {
+	if _, err := registerTools(registry, opts, nil, nil, nil); err != nil {
 		t.Fatalf("register tools: %v", err)
-		_ = taskTool
 	}
 	if got := len(registry.List()); got != 0 {
 		t.Fatalf("expected no builtins, got %d", got)
