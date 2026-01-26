@@ -100,7 +100,6 @@ func (m *anthropicModel) requestOptions() []option.RequestOption {
 		if envKey := strings.TrimSpace(os.Getenv("ANTHROPIC_API_KEY")); envKey != "" {
 			apiKey = envKey
 		} else if authToken := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")); authToken != "" {
-			_, _ = fmt.Fprintln(os.Stderr, "DEPRECATED: ANTHROPIC_AUTH_TOKEN is deprecated, use ANTHROPIC_API_KEY instead")
 			apiKey = authToken
 		}
 	}

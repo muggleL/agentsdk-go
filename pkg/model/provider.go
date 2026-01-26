@@ -71,7 +71,6 @@ func (p *AnthropicProvider) resolveAPIKey() string {
 		return key
 	}
 	if key := strings.TrimSpace(os.Getenv("ANTHROPIC_AUTH_TOKEN")); key != "" {
-		_, _ = fmt.Fprintln(os.Stderr, "DEPRECATED: ANTHROPIC_AUTH_TOKEN is deprecated, use ANTHROPIC_API_KEY instead")
 		return key
 	}
 	return ""
