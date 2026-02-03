@@ -25,7 +25,6 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 	"github.com/cexll/agentsdk-go/pkg/security"
-	"github.com/cexll/agentsdk-go/pkg/tasks"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 	toolbuiltin "github.com/cexll/agentsdk-go/pkg/tool/builtin"
 	"github.com/google/uuid"
@@ -69,10 +68,11 @@ type Runtime struct {
 	executor    *tool.Executor
 	// recorder is retained for backward compatibility.
 	// Deprecated: hook events are now recorded per-request via preparedRun.recorder.
-	recorder    HookRecorder
-	hooks       *corehooks.Executor
-	histories   *historyStore
-	sessionGate *sessionGate
+	recorder         HookRecorder
+	hooks            *corehooks.Executor
+	histories        *historyStore
+	historyPersister *diskHistoryPersister
+	sessionGate      *sessionGate
 
 	cmdExec   *commands.Executor
 	skReg     *skills.Registry
@@ -167,27 +167,44 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		}
 	}
 
+	histories := newHistoryStore(opts.MaxSessions)
+	var historyPersister *diskHistoryPersister
+	retainDays := 0
+	if settings != nil && settings.CleanupPeriodDays != nil {
+		retainDays = *settings.CleanupPeriodDays
+	}
+	if retainDays > 0 {
+		historyPersister = newDiskHistoryPersister(opts.ProjectRoot)
+		if historyPersister != nil {
+			histories.loader = historyPersister.Load
+			if err := historyPersister.Cleanup(retainDays); err != nil {
+				log.Printf("history cleanup warning: %v", err)
+			}
+		}
+	}
+
 	rt := &Runtime{
-		opts:        opts,
-		mode:        mode,
-		settings:    settings,
-		cfg:         projectConfigFromSettings(settings),
-		fs:          fsLayer,
-		rulesLoader: rulesLoader,
-		sandbox:     sbox,
-		sbRoot:      sbRoot,
-		registry:    registry,
-		executor:    executor,
-		recorder:    recorder,
-		hooks:       hooks,
-		histories:   newHistoryStore(opts.MaxSessions),
-		cmdExec:     cmdExec,
-		skReg:       skReg,
-		subMgr:      subMgr,
-		plugins:     plugins,
-		tokens:      newTokenTracker(opts.TokenTracking, opts.TokenCallback),
-		compactor:   compactor,
-		tracer:      tracer,
+		opts:             opts,
+		mode:             mode,
+		settings:         settings,
+		cfg:              projectConfigFromSettings(settings),
+		fs:               fsLayer,
+		rulesLoader:      rulesLoader,
+		sandbox:          sbox,
+		sbRoot:           sbRoot,
+		registry:         registry,
+		executor:         executor,
+		recorder:         recorder,
+		hooks:            hooks,
+		histories:        histories,
+		historyPersister: historyPersister,
+		cmdExec:          cmdExec,
+		skReg:            skReg,
+		subMgr:           subMgr,
+		plugins:          plugins,
+		tokens:           newTokenTracker(opts.TokenTracking, opts.TokenCallback),
+		compactor:        compactor,
+		tracer:           tracer,
 	}
 	rt.sessionGate = newSessionGate()
 
@@ -236,6 +253,7 @@ func (rt *Runtime) Run(ctx context.Context, req Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer rt.persistHistory(prep.normalized.SessionID, prep.history)
 	result, err := rt.runAgent(prep)
 	if err != nil {
 		return nil, err
@@ -286,6 +304,7 @@ func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEve
 			out <- StreamEvent{Type: EventError, Output: err.Error(), IsError: &isErr}
 			return
 		}
+		defer rt.persistHistory(prep.normalized.SessionID, prep.history)
 
 		done := make(chan struct{})
 		go func() {
@@ -1321,7 +1340,7 @@ func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, s
 	factories["bash_output"] = func() tool.Tool { return toolbuiltin.NewBashOutputTool(nil) }
 	factories["bash_status"] = func() tool.Tool { return toolbuiltin.NewBashStatusTool() }
 	factories["kill_task"] = func() tool.Tool { return toolbuiltin.NewKillTaskTool() }
-	factories["task_create"] = func() tool.Tool { return toolbuiltin.NewTaskCreateTool(tasks.NewTaskStore()) }
+	factories["task_create"] = func() tool.Tool { return toolbuiltin.NewTaskCreateTool(taskStore) }
 	factories["task_list"] = func() tool.Tool { return toolbuiltin.NewTaskListTool(taskStore) }
 	factories["task_get"] = func() tool.Tool { return toolbuiltin.NewTaskGetTool(taskStore) }
 	factories["task_update"] = func() tool.Tool { return toolbuiltin.NewTaskUpdateTool(taskStore) }
