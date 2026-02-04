@@ -1,6 +1,7 @@
 package security
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -39,6 +40,7 @@ type ApprovalRecord struct {
 // ApprovalQueue persists approvals and session-level whitelists.
 type ApprovalQueue struct {
 	mu        sync.Mutex
+	cond      *sync.Cond
 	storePath string
 	records   map[string]*ApprovalRecord
 	whitelist map[string]time.Time
@@ -53,6 +55,7 @@ func NewApprovalQueue(storePath string) (*ApprovalQueue, error) {
 		whitelist: make(map[string]time.Time),
 		clock:     time.Now,
 	}
+	q.cond = sync.NewCond(&q.mu)
 	if err := q.load(); err != nil {
 		return nil, err
 	}
@@ -78,6 +81,7 @@ func (q *ApprovalQueue) Request(sessionID, command string, paths []string) (*App
 
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.ensureCondLocked()
 
 	now := q.clock()
 	record := &ApprovalRecord{
@@ -108,6 +112,7 @@ func (q *ApprovalQueue) Request(sessionID, command string, paths []string) (*App
 func (q *ApprovalQueue) Approve(id, approver string, whitelistTTL time.Duration) (*ApprovalRecord, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.ensureCondLocked()
 
 	rec, ok := q.records[id]
 	if !ok {
@@ -136,6 +141,7 @@ func (q *ApprovalQueue) Approve(id, approver string, whitelistTTL time.Duration)
 	if err := q.persistLocked(); err != nil {
 		return nil, err
 	}
+	q.cond.Broadcast()
 	return cloneRecord(rec), nil
 }
 
@@ -143,6 +149,7 @@ func (q *ApprovalQueue) Approve(id, approver string, whitelistTTL time.Duration)
 func (q *ApprovalQueue) Deny(id, approver, reason string) (*ApprovalRecord, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.ensureCondLocked()
 
 	rec, ok := q.records[id]
 	if !ok {
@@ -160,6 +167,7 @@ func (q *ApprovalQueue) Deny(id, approver, reason string) (*ApprovalRecord, erro
 	if err := q.persistLocked(); err != nil {
 		return nil, err
 	}
+	q.cond.Broadcast()
 	return cloneRecord(rec), nil
 }
 
@@ -181,6 +189,7 @@ func (q *ApprovalQueue) ListPending() []*ApprovalRecord {
 func (q *ApprovalQueue) IsWhitelisted(sessionID string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	q.ensureCondLocked()
 
 	expiry, ok := q.whitelist[sessionID]
 	if !ok {
@@ -194,6 +203,49 @@ func (q *ApprovalQueue) IsWhitelisted(sessionID string) bool {
 		return false
 	}
 	return true
+}
+
+// Wait blocks until the approval is resolved or the context is cancelled.
+func (q *ApprovalQueue) Wait(ctx context.Context, id string) (*ApprovalRecord, error) {
+	if q == nil {
+		return nil, fmt.Errorf("security: approval queue is nil")
+	}
+	if strings.TrimSpace(id) == "" {
+		return nil, fmt.Errorf("security: approval id required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	q.mu.Lock()
+	q.ensureCondLocked()
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			q.mu.Lock()
+			q.ensureCondLocked()
+			q.cond.Broadcast()
+			q.mu.Unlock()
+		case <-done:
+		}
+	}()
+	defer close(done)
+	defer q.mu.Unlock()
+
+	for {
+		rec, ok := q.records[id]
+		if !ok {
+			return nil, fmt.Errorf("security: approval %s not found", id)
+		}
+		if rec.State != ApprovalPending {
+			return cloneRecord(rec), nil
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		q.cond.Wait()
+	}
 }
 
 func (q *ApprovalQueue) load() error {
@@ -254,6 +306,12 @@ func (q *ApprovalQueue) persistLocked() error {
 		return fmt.Errorf("security: atomically replace approvals: %w", err)
 	}
 	return nil
+}
+
+func (q *ApprovalQueue) ensureCondLocked() {
+	if q.cond == nil {
+		q.cond = sync.NewCond(&q.mu)
+	}
 }
 
 type approvalSnapshot struct {

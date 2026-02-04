@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"syscall"
 )
@@ -107,13 +106,4 @@ func openNoFollow(path string) error {
 	}
 	syscall.Close(fd)
 	return nil
-}
-
-func supportsNoFollow() bool {
-	switch runtime.GOOS {
-	case "windows":
-		return false
-	default:
-		return true
-	}
 }

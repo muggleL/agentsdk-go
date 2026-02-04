@@ -57,15 +57,8 @@ func MergeSettings(lower, higher *Settings) *Settings {
 	result.Sandbox = mergeSandbox(lower.Sandbox, higher.Sandbox)
 	result.BashOutput = mergeBashOutput(lower.BashOutput, higher.BashOutput)
 	result.ToolOutput = mergeToolOutput(lower.ToolOutput, higher.ToolOutput)
-	if higher.EnableAllProjectMCPServers != nil {
-		result.EnableAllProjectMCPServers = boolPtr(*higher.EnableAllProjectMCPServers)
-	}
-	result.EnabledMCPJSONServers = mergeStringSlices(lower.EnabledMCPJSONServers, higher.EnabledMCPJSONServers)
-	result.DisabledMCPJSONServers = mergeStringSlices(lower.DisabledMCPJSONServers, higher.DisabledMCPJSONServers)
 	result.AllowedMcpServers = mergeMCPServerRules(lower.AllowedMcpServers, higher.AllowedMcpServers)
 	result.DeniedMcpServers = mergeMCPServerRules(lower.DeniedMcpServers, higher.DeniedMcpServers)
-	result.EnabledPlugins = mergeBoolMap(lower.EnabledPlugins, higher.EnabledPlugins)
-	result.ExtraKnownMarketplaces = mergeMarketplaceSources(lower.ExtraKnownMarketplaces, higher.ExtraKnownMarketplaces)
 	if higher.AWSAuthRefresh != "" {
 		result.AWSAuthRefresh = higher.AWSAuthRefresh
 	}
@@ -271,73 +264,6 @@ func mergeStringSlices(lower, higher []string) []string {
 	return out
 }
 
-// mergeBoolMap merges map[string]bool with higher overriding.
-func mergeBoolMap(lower, higher map[string]bool) map[string]bool {
-	if len(lower) == 0 && len(higher) == 0 {
-		return nil
-	}
-	out := make(map[string]bool, len(lower)+len(higher))
-	for k, v := range lower {
-		out[k] = v
-	}
-	for k, v := range higher {
-		out[k] = v
-	}
-	return out
-}
-
-// mergeMarketplaceSources merges marketplace sources by key.
-func mergeMarketplaceSources(lower, higher map[string]MarketplaceSource) map[string]MarketplaceSource {
-	if len(lower) == 0 && len(higher) == 0 {
-		return nil
-	}
-	out := make(map[string]MarketplaceSource, len(lower)+len(higher))
-	for k, v := range lower {
-		out[k] = v
-	}
-	for k, v := range higher {
-		out[k] = v
-	}
-	return out
-}
-
-// mergeMarketplaceConfigMap merges marketplace configs (map[string]*MarketplaceConfig) per key.
-// nolint:unused // kept for forward-compat when marketplace layering lands.
-func mergeMarketplaceConfigMap(lower, higher map[string]*MarketplaceConfig) map[string]*MarketplaceConfig {
-	if len(lower) == 0 && len(higher) == 0 {
-		return nil
-	}
-	out := make(map[string]*MarketplaceConfig, len(lower)+len(higher))
-	for k, v := range lower {
-		out[k] = cloneMarketplaceConfig(v)
-	}
-	for k, v := range higher {
-		out[k] = cloneMarketplaceConfig(v)
-		if base, ok := lower[k]; ok && v != nil && base != nil {
-			out[k] = mergeMarketplaceConfig(base, v)
-		}
-	}
-	return out
-}
-
-// mergeMarketplaceConfig merges two MarketplaceConfig pointers.
-// nolint:unused // kept for forward-compat when marketplace layering lands.
-func mergeMarketplaceConfig(lower, higher *MarketplaceConfig) *MarketplaceConfig {
-	if lower == nil && higher == nil {
-		return nil
-	}
-	if lower == nil {
-		return cloneMarketplaceConfig(higher)
-	}
-	if higher == nil {
-		return cloneMarketplaceConfig(lower)
-	}
-	out := cloneMarketplaceConfig(lower)
-	out.EnabledPlugins = mergeBoolMap(lower.EnabledPlugins, higher.EnabledPlugins)
-	out.ExtraKnownMarketplaces = mergeMarketplaceSources(lower.ExtraKnownMarketplaces, higher.ExtraKnownMarketplaces)
-	return out
-}
-
 func mergeStatusLine(lower, higher *StatusLineConfig) *StatusLineConfig {
 	if lower == nil && higher == nil {
 		return nil
@@ -417,13 +343,8 @@ func cloneSettings(src *Settings) *Settings {
 	out.Sandbox = cloneSandbox(src.Sandbox)
 	out.BashOutput = cloneBashOutput(src.BashOutput)
 	out.ToolOutput = cloneToolOutput(src.ToolOutput)
-	out.EnableAllProjectMCPServers = cloneBoolPtr(src.EnableAllProjectMCPServers)
-	out.EnabledMCPJSONServers = mergeStringSlices(nil, src.EnabledMCPJSONServers)
-	out.DisabledMCPJSONServers = mergeStringSlices(nil, src.DisabledMCPJSONServers)
 	out.AllowedMcpServers = mergeMCPServerRules(nil, src.AllowedMcpServers)
 	out.DeniedMcpServers = mergeMCPServerRules(nil, src.DeniedMcpServers)
-	out.EnabledPlugins = mergeBoolMap(nil, src.EnabledPlugins)
-	out.ExtraKnownMarketplaces = mergeMarketplaceSources(nil, src.ExtraKnownMarketplaces)
 	out.MCP = cloneMCPConfig(src.MCP)
 	out.LegacyMCPServers = mergeStringSlices(nil, src.LegacyMCPServers)
 	return &out
@@ -544,17 +465,6 @@ func cloneStatusLine(src *StatusLineConfig) *StatusLineConfig {
 		return nil
 	}
 	out := *src
-	return &out
-}
-
-// nolint:unused // kept for forward-compat when marketplace layering lands.
-func cloneMarketplaceConfig(src *MarketplaceConfig) *MarketplaceConfig {
-	if src == nil {
-		return nil
-	}
-	out := *src
-	out.EnabledPlugins = mergeBoolMap(nil, src.EnabledPlugins)
-	out.ExtraKnownMarketplaces = mergeMarketplaceSources(nil, src.ExtraKnownMarketplaces)
 	return &out
 }
 

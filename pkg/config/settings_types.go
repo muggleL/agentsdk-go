@@ -3,8 +3,6 @@ package config
 import (
 	"errors"
 	"strings"
-
-	"github.com/cexll/agentsdk-go/pkg/plugins"
 )
 
 // Settings models the full contents of .claude/settings.json.
@@ -29,13 +27,8 @@ type Settings struct {
 	Sandbox                    *SandboxConfig               `json:"sandbox,omitempty"`                    // Bash sandbox configuration.
 	BashOutput                 *BashOutputConfig            `json:"bashOutput,omitempty"`                 // Thresholds for spooling bash output to disk.
 	ToolOutput                 *ToolOutputConfig            `json:"toolOutput,omitempty"`                 // Thresholds for persisting large tool outputs to disk.
-	EnableAllProjectMCPServers *bool                        `json:"enableAllProjectMcpServers,omitempty"` // Auto-approve all project .mcp.json servers.
-	EnabledMCPJSONServers      []string                     `json:"enabledMcpjsonServers,omitempty"`      // Allowlist of project MCP servers.
-	DisabledMCPJSONServers     []string                     `json:"disabledMcpjsonServers,omitempty"`     // Denylist of project MCP servers.
 	AllowedMcpServers          []MCPServerRule              `json:"allowedMcpServers,omitempty"`          // Managed allowlist of user-configurable MCP servers.
 	DeniedMcpServers           []MCPServerRule              `json:"deniedMcpServers,omitempty"`           // Managed denylist of user-configurable MCP servers.
-	EnabledPlugins             map[string]bool              `json:"enabledPlugins,omitempty"`             // Plugin enable/disable map keyed by plugin id.
-	ExtraKnownMarketplaces     map[string]MarketplaceSource `json:"extraKnownMarketplaces,omitempty"`     // Additional plugin marketplaces by name.
 	AWSAuthRefresh             string                       `json:"awsAuthRefresh,omitempty"`             // Script to refresh AWS SSO credentials.
 	AWSCredentialExport        string                       `json:"awsCredentialExport,omitempty"`        // Script that prints JSON AWS credentials.
 	RespectGitignore           *bool                        `json:"respectGitignore,omitempty"`           // Whether Glob/Grep tools should respect .gitignore patterns.
@@ -102,12 +95,6 @@ type ToolOutputConfig struct {
 	DefaultThresholdBytes int            `json:"defaultThresholdBytes,omitempty"` // Persist output to disk after exceeding this many bytes (0 = SDK default).
 	PerToolThresholdBytes map[string]int `json:"perToolThresholdBytes,omitempty"` // Optional per-tool thresholds keyed by canonical tool name.
 }
-
-// MarketplaceConfig holds plugin marketplace related fields.
-type MarketplaceConfig = plugins.MarketplaceConfig
-
-// MarketplaceSource describes where a marketplace is hosted.
-type MarketplaceSource = plugins.MarketplaceSource
 
 // MCPConfig nests Model Context Protocol server definitions.
 type MCPConfig struct {

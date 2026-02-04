@@ -9,8 +9,7 @@ import (
 )
 
 var (
-	toolNamePattern      = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
-	pluginSegmentPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+	toolNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 )
 
 // ValidateSettings checks the merged Settings structure for logical consistency.
@@ -44,9 +43,6 @@ func ValidateSettings(s *Settings) error {
 
 	// mcp
 	errs = append(errs, validateMCPConfig(s.MCP, s.LegacyMCPServers)...)
-
-	// plugins & marketplaces
-	errs = append(errs, validatePluginsConfig(s.EnabledPlugins, s.ExtraKnownMarketplaces)...)
 
 	// status line
 	errs = append(errs, validateStatusLineConfig(s.StatusLine)...)
@@ -341,74 +337,6 @@ func validatePortRange(port int) error {
 		return fmt.Errorf("port %d out of range (1-65535)", port)
 	}
 	return nil
-}
-
-func validatePluginsConfig(enabled map[string]bool, marketplaces map[string]MarketplaceSource) []error {
-	var errs []error
-	if len(enabled) > 0 {
-		keys := make([]string, 0, len(enabled))
-		for k := range enabled {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			if err := validatePluginKey(key); err != nil {
-				errs = append(errs, fmt.Errorf("enabledPlugins[%s]: %w", key, err))
-			}
-		}
-	}
-	if len(marketplaces) > 0 {
-		names := make([]string, 0, len(marketplaces))
-		for name := range marketplaces {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
-			src := marketplaces[name]
-			if err := validateMarketplaceSource(&src); err != nil {
-				errs = append(errs, fmt.Errorf("extraKnownMarketplaces[%s]: %w", name, err))
-			}
-		}
-	}
-	return errs
-}
-
-// validatePluginKey enforces the plugin-name@marketplace-name syntax.
-func validatePluginKey(key string) error {
-	key = strings.TrimSpace(key)
-	if key == "" {
-		return errors.New("plugin key is empty")
-	}
-	parts := strings.Split(key, "@")
-	if len(parts) != 2 {
-		return fmt.Errorf("plugin key %q must be formatted as plugin@marketplace", key)
-	}
-	plugin, market := parts[0], parts[1]
-	if plugin == "" || market == "" {
-		return fmt.Errorf("plugin key %q must include non-empty plugin and marketplace", key)
-	}
-	if !pluginSegmentPattern.MatchString(plugin) {
-		return fmt.Errorf("plugin segment %q has invalid characters", plugin)
-	}
-	if !pluginSegmentPattern.MatchString(market) {
-		return fmt.Errorf("marketplace segment %q has invalid characters", market)
-	}
-	return nil
-}
-
-// validateMarketplaceSource validates marketplace source type only, as requested.
-func validateMarketplaceSource(source *MarketplaceSource) error {
-	if source == nil {
-		return errors.New("marketplace source is nil")
-	}
-	switch source.Source {
-	case "github", "git", "directory":
-		return nil
-	case "":
-		return errors.New("marketplace source is empty")
-	default:
-		return fmt.Errorf("unsupported marketplace source %q", source.Source)
-	}
 }
 
 func validateStatusLineConfig(cfg *StatusLineConfig) []error {
