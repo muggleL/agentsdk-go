@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -421,50 +420,20 @@ func (s *historyStore) SessionIDs() []string {
 	return ids
 }
 
-func bashOutputBaseDir() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(os.TempDir(), "agentsdk", "bash-output")
-	}
-	return filepath.Join(string(filepath.Separator), "tmp", "agentsdk", "bash-output")
-}
-
-func toolOutputBaseDir() string {
-	if runtime.GOOS == "windows" {
-		return filepath.Join(os.TempDir(), "agentsdk", "tool-output")
-	}
-	return filepath.Join(string(filepath.Separator), "tmp", "agentsdk", "tool-output")
-}
-
 func bashOutputSessionDir(sessionID string) string {
-	base := strings.TrimSpace(bashOutputBaseDir())
-	if base == "" {
-		return ""
-	}
-	return filepath.Join(base, sanitizePathComponent(sessionID))
+	return filepath.Join(bashOutputBaseDir(), sanitizePathComponent(sessionID))
 }
 
 func cleanupBashOutputSessionDir(sessionID string) error {
-	dir := bashOutputSessionDir(sessionID)
-	if strings.TrimSpace(dir) == "" {
-		return errors.New("bash output directory is empty")
-	}
-	return os.RemoveAll(dir)
+	return os.RemoveAll(bashOutputSessionDir(sessionID))
 }
 
 func toolOutputSessionDir(sessionID string) string {
-	base := strings.TrimSpace(toolOutputBaseDir())
-	if base == "" {
-		return ""
-	}
-	return filepath.Join(base, sanitizePathComponent(sessionID))
+	return filepath.Join(toolOutputBaseDir(), sanitizePathComponent(sessionID))
 }
 
 func cleanupToolOutputSessionDir(sessionID string) error {
-	dir := toolOutputSessionDir(sessionID)
-	if strings.TrimSpace(dir) == "" {
-		return errors.New("tool output directory is empty")
-	}
-	return os.RemoveAll(dir)
+	return os.RemoveAll(toolOutputSessionDir(sessionID))
 }
 
 func sanitizePathComponent(value string) string {

@@ -23,7 +23,9 @@ func (t *noopTracer) StartToolSpan(_ SpanContext, _ string) SpanContext {
 	return &noopSpan{}
 }
 
-func (t *noopTracer) EndSpan(_ SpanContext, _ map[string]any, _ error) {}
+func (t *noopTracer) EndSpan(_ SpanContext, _ map[string]any, _ error) {
+	_ = t
+}
 
 func (t *noopTracer) Shutdown() error { return nil }
 

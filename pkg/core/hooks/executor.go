@@ -213,7 +213,9 @@ func (e *Executor) Execute(ctx context.Context, evt events.Event) ([]Result, err
 }
 
 // Close is present for API parity; no resources are held.
-func (e *Executor) Close() {}
+func (e *Executor) Close() {
+	_ = e
+}
 
 func (e *Executor) runHooks(ctx context.Context, evt events.Event) ([]Result, error) {
 	hooks := e.matchingHooks(evt)

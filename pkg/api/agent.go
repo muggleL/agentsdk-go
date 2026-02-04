@@ -19,10 +19,10 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/message"
 	"github.com/cexll/agentsdk-go/pkg/middleware"
 	"github.com/cexll/agentsdk-go/pkg/model"
-	"github.com/cexll/agentsdk-go/pkg/plugins"
 	"github.com/cexll/agentsdk-go/pkg/runtime/commands"
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
+	"github.com/cexll/agentsdk-go/pkg/runtime/tasks"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
@@ -77,7 +77,6 @@ type Runtime struct {
 	cmdExec   *commands.Executor
 	skReg     *skills.Registry
 	subMgr    *subagents.Manager
-	plugins   []*plugins.ClaudePlugin
 	tokens    *tokenTracker
 	compactor *compactor
 	tracer    Tracer
@@ -100,6 +99,20 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 	// 初始化文件系统抽象层
 	fsLayer := config.NewFS(opts.ProjectRoot, opts.EmbedFS)
 	opts.fsLayer = fsLayer
+
+	if err := materializeEmbeddedClaudeHooks(opts.ProjectRoot, opts.EmbedFS); err != nil {
+		log.Printf("claude hooks materializer warning: %v", err)
+	}
+
+	if memory, err := config.LoadClaudeMD(opts.ProjectRoot, fsLayer); err != nil {
+		log.Printf("claude.md loader warning: %v", err)
+	} else if strings.TrimSpace(memory) != "" {
+		if strings.TrimSpace(opts.SystemPrompt) == "" {
+			opts.SystemPrompt = fmt.Sprintf("## Memory\n\n%s", strings.TrimSpace(memory))
+		} else {
+			opts.SystemPrompt = fmt.Sprintf("%s\n\n## Memory\n\n%s", strings.TrimSpace(opts.SystemPrompt), strings.TrimSpace(memory))
+		}
+	}
 
 	settings, err := loadSettings(opts)
 	if err != nil {
@@ -132,15 +145,11 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		}
 	}
 	registry := tool.NewRegistry()
-	plugins, err := discoverPlugins(opts.ProjectRoot, settings)
-	if err != nil {
-		return nil, err
-	}
 	taskTool, err := registerTools(registry, opts, settings, skReg, cmdExec)
 	if err != nil {
 		return nil, err
 	}
-	mcpServers := collectMCPServers(settings, plugins, opts.MCPServers)
+	mcpServers := collectMCPServers(settings, opts.MCPServers)
 	if err := registerMCPServers(ctx, registry, sbox, mcpServers); err != nil {
 		return nil, err
 	}
@@ -201,7 +210,6 @@ func New(ctx context.Context, opts Options) (*Runtime, error) {
 		cmdExec:          cmdExec,
 		skReg:            skReg,
 		subMgr:           subMgr,
-		plugins:          plugins,
 		tokens:           newTokenTracker(opts.TokenTracking, opts.TokenCallback),
 		compactor:        compactor,
 		tracer:           tracer,
@@ -529,6 +537,7 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 		enableCache = *prep.normalized.EnablePromptCache
 	}
 
+	hookAdapter := &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder}
 	modelAdapter := &conversationModel{
 		base:         selectedModel,
 		history:      prep.history,
@@ -538,20 +547,21 @@ func (rt *Runtime) runAgentWithMiddleware(prep preparedRun, extras ...middleware
 		systemPrompt: rt.opts.SystemPrompt,
 		rulesLoader:  rt.rulesLoader,
 		enableCache:  enableCache,
-		hooks:        &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder},
+		hooks:        hookAdapter,
 		recorder:     prep.recorder,
 		compactor:    rt.compactor,
 		sessionID:    prep.normalized.SessionID,
 	}
 
 	toolExec := &runtimeToolExecutor{
-		executor:  rt.executor,
-		hooks:     &runtimeHookAdapter{executor: rt.hooks, recorder: prep.recorder},
-		history:   prep.history,
-		allow:     prep.toolWhitelist,
-		root:      rt.sbRoot,
-		host:      "localhost",
-		sessionID: prep.normalized.SessionID,
+		executor:           rt.executor,
+		hooks:              hookAdapter,
+		history:            prep.history,
+		allow:              prep.toolWhitelist,
+		root:               rt.sbRoot,
+		host:               "localhost",
+		sessionID:          prep.normalized.SessionID,
+		permissionResolver: buildPermissionResolver(hookAdapter, rt.opts.PermissionRequestHandler, rt.opts.ApprovalQueue, rt.opts.ApprovalApprover, rt.opts.ApprovalWhitelistTTL, rt.opts.ApprovalWait),
 	}
 
 	chainItems := make([]middleware.Middleware, 0, len(rt.opts.Middleware)+len(extras))
@@ -638,7 +648,6 @@ func (rt *Runtime) buildResponse(prep preparedRun, result runResult) *Response {
 		HookEvents:      events,
 		ProjectConfig:   rt.Settings(),
 		Settings:        rt.Settings(),
-		Plugins:         snapshotPlugins(rt.plugins),
 		SandboxSnapshot: rt.sandboxReport(),
 		Tags:            maps.Clone(prep.normalized.Tags),
 	}
@@ -1044,6 +1053,8 @@ type runtimeToolExecutor struct {
 	root      string
 	host      string
 	sessionID string
+
+	permissionResolver tool.PermissionResolver
 }
 
 func (t *runtimeToolExecutor) measureUsage() sandbox.ResourceUsage {
@@ -1098,12 +1109,43 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 		}
 	}
 
-	if params, err := t.hooks.PreToolUse(ctx, coreToolUsePayload(call)); err != nil {
+	params, preErr := t.hooks.PreToolUse(ctx, coreToolUsePayload(call))
+	if preErr != nil {
+		if errors.Is(preErr, ErrToolUseRequiresApproval) && t.permissionResolver != nil {
+			checkParams := call.Input
+			if params != nil {
+				checkParams = params
+			}
+			decision, err := t.permissionResolver(ctx, tool.Call{
+				Name:      call.Name,
+				Params:    checkParams,
+				SessionID: t.sessionID,
+			}, security.PermissionDecision{
+				Action: security.PermissionAsk,
+				Tool:   call.Name,
+				Rule:   "hook:pre_tool_use",
+			})
+			if err != nil {
+				preErr = err
+			} else {
+				switch decision.Action {
+				case security.PermissionAllow:
+					preErr = nil
+				case security.PermissionDeny:
+					preErr = fmt.Errorf("%w: %s", ErrToolUseDenied, call.Name)
+				default:
+					preErr = fmt.Errorf("%w: %s", ErrToolUseRequiresApproval, call.Name)
+				}
+			}
+		}
+	}
+	if preErr != nil {
 		// Hook denied execution - still need to add tool_result to history
-		errContent := fmt.Sprintf(`{"error":%q}`, err.Error())
+		errContent := fmt.Sprintf(`{"error":%q}`, preErr.Error())
 		appendToolResult(errContent)
-		return agent.ToolResult{Name: call.Name, Output: errContent, Metadata: map[string]any{"error": err.Error()}}, err
-	} else if params != nil {
+		return agent.ToolResult{Name: call.Name, Output: errContent, Metadata: map[string]any{"error": preErr.Error()}}, preErr
+	}
+	if params != nil {
 		call.Input = params
 	}
 
@@ -1130,7 +1172,11 @@ func (t *runtimeToolExecutor) Execute(ctx context.Context, call agent.ToolCall, 
 	if t.host != "" {
 		callSpec.Host = t.host
 	}
-	result, err := t.executor.Execute(ctx, callSpec)
+	exec := t.executor
+	if t.permissionResolver != nil {
+		exec = exec.WithPermissionResolver(t.permissionResolver)
+	}
+	result, err := exec.Execute(ctx, callSpec)
 	toolResult := agent.ToolResult{Name: call.Name}
 	meta := map[string]any{}
 	content := ""
@@ -1172,6 +1218,144 @@ func coreToolResultPayload(call agent.ToolCall, res *tool.CallResult, err error)
 	}
 	payload.Err = err
 	return payload
+}
+
+func buildPermissionResolver(hooks *runtimeHookAdapter, handler PermissionRequestHandler, approvals *security.ApprovalQueue, approver string, whitelistTTL time.Duration, approvalWait bool) tool.PermissionResolver {
+	if hooks == nil && handler == nil && approvals == nil {
+		return nil
+	}
+	return func(ctx context.Context, call tool.Call, decision security.PermissionDecision) (security.PermissionDecision, error) {
+		if decision.Action != security.PermissionAsk {
+			return decision, nil
+		}
+
+		req := PermissionRequest{
+			ToolName:   call.Name,
+			ToolParams: call.Params,
+			SessionID:  call.SessionID,
+			Rule:       decision.Rule,
+			Target:     decision.Target,
+			Reason:     buildPermissionReason(decision),
+		}
+
+		var record *security.ApprovalRecord
+		if approvals != nil && strings.TrimSpace(call.SessionID) != "" {
+			command := formatApprovalCommand(call.Name, decision.Target)
+			rec, err := approvals.Request(call.SessionID, command, nil)
+			if err != nil {
+				return decision, err
+			}
+			record = rec
+			req.Approval = rec
+			if rec != nil && rec.State == security.ApprovalApproved && rec.AutoApproved {
+				return decisionWithAction(decision, security.PermissionAllow), nil
+			}
+		}
+
+		if hooks != nil {
+			hookDecision, err := hooks.PermissionRequest(ctx, coreevents.PermissionRequestPayload{
+				ToolName:   call.Name,
+				ToolParams: call.Params,
+				Reason:     req.Reason,
+			})
+			if err != nil {
+				return decision, err
+			}
+			switch hookDecision {
+			case coreevents.PermissionAllow:
+				if record != nil {
+					if _, err := approvals.Approve(record.ID, approvalActor(approver), whitelistTTL); err != nil {
+						return decision, err
+					}
+				}
+				return decisionWithAction(decision, security.PermissionAllow), nil
+			case coreevents.PermissionDeny:
+				if record != nil {
+					if _, err := approvals.Deny(record.ID, approvalActor(approver), "denied by permission hook"); err != nil {
+						return decision, err
+					}
+				}
+				return decisionWithAction(decision, security.PermissionDeny), nil
+			}
+		}
+
+		if handler != nil {
+			hostDecision, err := handler(ctx, req)
+			if err != nil {
+				return decision, err
+			}
+			switch hostDecision {
+			case coreevents.PermissionAllow:
+				if record != nil {
+					if _, err := approvals.Approve(record.ID, approvalActor(approver), whitelistTTL); err != nil {
+						return decision, err
+					}
+				}
+				return decisionWithAction(decision, security.PermissionAllow), nil
+			case coreevents.PermissionDeny:
+				if record != nil {
+					if _, err := approvals.Deny(record.ID, approvalActor(approver), "denied by host"); err != nil {
+						return decision, err
+					}
+				}
+				return decisionWithAction(decision, security.PermissionDeny), nil
+			}
+		}
+
+		if approvalWait && approvals != nil && record != nil {
+			resolved, err := approvals.Wait(ctx, record.ID)
+			if err != nil {
+				return decision, err
+			}
+			switch resolved.State {
+			case security.ApprovalApproved:
+				return decisionWithAction(decision, security.PermissionAllow), nil
+			case security.ApprovalDenied:
+				return decisionWithAction(decision, security.PermissionDeny), nil
+			}
+		}
+
+		return decision, nil
+	}
+}
+
+func buildPermissionReason(decision security.PermissionDecision) string {
+	rule := strings.TrimSpace(decision.Rule)
+	target := strings.TrimSpace(decision.Target)
+	switch {
+	case rule == "" && target == "":
+		return ""
+	case rule == "":
+		return fmt.Sprintf("target %q", target)
+	case target == "":
+		return fmt.Sprintf("rule %q", rule)
+	default:
+		return fmt.Sprintf("rule %q for %s", rule, target)
+	}
+}
+
+func formatApprovalCommand(toolName, target string) string {
+	name := strings.TrimSpace(toolName)
+	if name == "" {
+		name = "tool"
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return name
+	}
+	return fmt.Sprintf("%s(%s)", name, target)
+}
+
+func decisionWithAction(base security.PermissionDecision, action security.PermissionAction) security.PermissionDecision {
+	base.Action = action
+	return base
+}
+
+func approvalActor(approver string) string {
+	if strings.TrimSpace(approver) == "" {
+		return "host"
+	}
+	return strings.TrimSpace(approver)
 }
 
 // ----------------- config + registries -----------------
@@ -1315,19 +1499,32 @@ func builtinToolFactories(root string, sandboxDisabled bool, entry EntryPoint, s
 		}
 		return toolbuiltin.NewEditToolWithRoot(root)
 	}
+
+	respectGitignore := true
+	if settings != nil && settings.RespectGitignore != nil {
+		respectGitignore = *settings.RespectGitignore
+	}
 	grepCtor := func() tool.Tool {
 		if sandboxDisabled {
-			return toolbuiltin.NewGrepToolWithSandbox(root, security.NewDisabledSandbox())
+			grep := toolbuiltin.NewGrepToolWithSandbox(root, security.NewDisabledSandbox())
+			grep.SetRespectGitignore(respectGitignore)
+			return grep
 		}
-		return toolbuiltin.NewGrepToolWithRoot(root)
+		grep := toolbuiltin.NewGrepToolWithRoot(root)
+		grep.SetRespectGitignore(respectGitignore)
+		return grep
 	}
 	globCtor := func() tool.Tool {
 		if sandboxDisabled {
-			return toolbuiltin.NewGlobToolWithSandbox(root, security.NewDisabledSandbox())
+			glob := toolbuiltin.NewGlobToolWithSandbox(root, security.NewDisabledSandbox())
+			glob.SetRespectGitignore(respectGitignore)
+			return glob
 		}
-		return toolbuiltin.NewGlobToolWithRoot(root)
+		glob := toolbuiltin.NewGlobToolWithRoot(root)
+		glob.SetRespectGitignore(respectGitignore)
+		return glob
 	}
-	taskStore := toolbuiltin.NewTaskStore()
+	taskStore := tasks.NewTaskStore()
 
 	factories["bash"] = bashCtor
 	factories["file_read"] = readCtor
@@ -1445,7 +1642,18 @@ func registerMCPServers(ctx context.Context, registry *tool.Registry, manager *s
 		if err := enforceSandboxHost(manager, spec); err != nil {
 			return err
 		}
-		if err := registry.RegisterMCPServer(ctx, spec, server.Name); err != nil {
+		opts := tool.MCPServerOptions{Headers: server.Headers, Env: server.Env}
+		if server.TimeoutSeconds > 0 {
+			opts.Timeout = time.Duration(server.TimeoutSeconds) * time.Second
+		}
+
+		var err error
+		if len(opts.Headers) == 0 && len(opts.Env) == 0 && opts.Timeout <= 0 {
+			err = registry.RegisterMCPServer(ctx, spec, server.Name)
+		} else {
+			err = registry.RegisterMCPServerWithOptions(ctx, spec, server.Name, opts)
+		}
+		if err != nil {
 			return fmt.Errorf("api: register MCP %s: %w", spec, err)
 		}
 	}
@@ -1456,11 +1664,14 @@ func enforceSandboxHost(manager *sandbox.Manager, server string) error {
 	if manager == nil || strings.TrimSpace(server) == "" {
 		return nil
 	}
-	if strings.HasPrefix(server, "http://") || strings.HasPrefix(server, "https://") {
-		u, err := url.Parse(server)
-		if err != nil {
-			return fmt.Errorf("api: parse MCP server %s: %w", server, err)
-		}
+	u, err := url.Parse(server)
+	if err != nil || u == nil || strings.TrimSpace(u.Scheme) == "" {
+		return nil
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	base, _, _ := strings.Cut(scheme, "+")
+	switch base {
+	case "http", "https", "sse":
 		if err := manager.CheckNetwork(u.Host); err != nil {
 			return fmt.Errorf("api: MCP host denied: %w", err)
 		}

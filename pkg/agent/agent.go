@@ -159,12 +159,16 @@ func (a *Agent) Run(ctx context.Context, c *Context) (*ModelOutput, error) {
 
 			res, err := a.tools.Execute(ctx, call, c)
 			if err != nil {
-				res = ToolResult{
-					Name:   call.Name,
-					Output: fmt.Sprintf("Tool execution failed: %v", err),
-					Metadata: map[string]any{
-						"is_error": true,
-					},
+				if res.Name == "" {
+					res.Name = call.Name
+				}
+				if res.Metadata == nil {
+					res.Metadata = map[string]any{}
+				}
+				res.Metadata["is_error"] = true
+				res.Metadata["error"] = err.Error()
+				if res.Output == "" {
+					res.Output = fmt.Sprintf("Tool execution failed: %v", err)
 				}
 			}
 

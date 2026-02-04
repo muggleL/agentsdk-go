@@ -29,6 +29,7 @@ type (
 	SSEHandler                  = mcpsdk.SSEHandler
 	StreamableClientTransport   = mcpsdk.StreamableClientTransport
 	Tool                        = mcpsdk.Tool
+	ToolListChangedRequest      = mcpsdk.ToolListChangedRequest
 	ToolAnnotations             = mcpsdk.ToolAnnotations
 	ToolHandler                 = mcpsdk.ToolHandler
 	ToolHandlerFor[In, Out any] = mcpsdk.ToolHandlerFor[In, Out]

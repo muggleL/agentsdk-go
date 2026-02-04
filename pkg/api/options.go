@@ -22,13 +22,16 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/runtime/skills"
 	"github.com/cexll/agentsdk-go/pkg/runtime/subagents"
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
+	"github.com/cexll/agentsdk-go/pkg/security"
 	"github.com/cexll/agentsdk-go/pkg/tool"
 )
 
 var (
-	ErrMissingModel        = errors.New("api: model factory is required")
-	ErrConcurrentExecution = errors.New("concurrent execution on same session is not allowed")
-	ErrRuntimeClosed       = errors.New("api: runtime is closed")
+	ErrMissingModel            = errors.New("api: model factory is required")
+	ErrConcurrentExecution     = errors.New("concurrent execution on same session is not allowed")
+	ErrRuntimeClosed           = errors.New("api: runtime is closed")
+	ErrToolUseDenied           = errors.New("api: tool use denied by hook")
+	ErrToolUseRequiresApproval = errors.New("api: tool use requires approval")
 )
 
 type EntryPoint string
@@ -94,6 +97,20 @@ type SandboxOptions struct {
 	NetworkAllow  []string
 	ResourceLimit sandbox.ResourceLimits
 }
+
+// PermissionRequest captures a permission prompt for sandbox "ask" matches.
+type PermissionRequest struct {
+	ToolName   string
+	ToolParams map[string]any
+	SessionID  string
+	Rule       string
+	Target     string
+	Reason     string
+	Approval   *security.ApprovalRecord
+}
+
+// PermissionRequestHandler lets hosts synchronously allow/deny PermissionAsk decisions.
+type PermissionRequestHandler func(context.Context, PermissionRequest) (coreevents.PermissionDecisionType, error)
 
 // SkillRegistration wires runtime skill definitions + handlers.
 type SkillRegistration struct {
@@ -205,6 +222,19 @@ type Options struct {
 	// processing, spawn a goroutine inside the callback.
 	TokenCallback TokenCallback
 
+	// PermissionRequestHandler handles sandbox PermissionAsk decisions. Returning
+	// PermissionAllow continues tool execution; PermissionDeny rejects it; PermissionAsk
+	// leaves the request pending.
+	PermissionRequestHandler PermissionRequestHandler
+	// ApprovalQueue optionally persists permission decisions and supports session whitelists.
+	ApprovalQueue *security.ApprovalQueue
+	// ApprovalApprover labels approvals/denials stored in ApprovalQueue.
+	ApprovalApprover string
+	// ApprovalWhitelistTTL controls session whitelist duration for approvals.
+	ApprovalWhitelistTTL time.Duration
+	// ApprovalWait blocks tool execution until a pending approval is resolved.
+	ApprovalWait bool
+
 	// AutoCompact enables automatic context compaction for long sessions.
 	AutoCompact CompactConfig
 
@@ -254,7 +284,6 @@ type Response struct {
 	// Deprecated: Use Settings instead. Kept for backward compatibility.
 	ProjectConfig   *config.Settings
 	Settings        *config.Settings
-	Plugins         []PluginSnapshot
 	SandboxSnapshot SandboxReport
 	Tags            map[string]string
 }
@@ -287,17 +316,6 @@ type SandboxReport struct {
 	AllowedPaths   []string
 	AllowedDomains []string
 	ResourceLimits sandbox.ResourceLimits
-}
-
-// PluginSnapshot captures the plugin assets that were loaded for the runtime.
-type PluginSnapshot struct {
-	Name        string
-	Version     string
-	Description string
-	Commands    []string
-	Agents      []string
-	Skills      []string
-	Hooks       map[string][]string
 }
 
 // WithMaxSessions caps how many parallel session histories are retained.
@@ -664,6 +682,15 @@ func (h *runtimeHookAdapter) PreToolUse(ctx context.Context, evt coreevents.Tool
 		}
 	}
 
+	for _, res := range results {
+		switch res.Decision {
+		case corehooks.DecisionDeny:
+			return nil, fmt.Errorf("%w: %s", ErrToolUseDenied, evt.Name)
+		case corehooks.DecisionAsk:
+			return nil, fmt.Errorf("%w: %s", ErrToolUseRequiresApproval, evt.Name)
+		}
+	}
+
 	params := evt.Params
 	for _, res := range results {
 		if res.Permission == nil {
@@ -733,6 +760,11 @@ func (h *runtimeHookAdapter) PermissionRequest(ctx context.Context, evt coreeven
 	results, err := h.executor.Execute(ctx, coreevents.Event{Type: coreevents.PermissionRequest, Payload: evt})
 	if err != nil {
 		return coreevents.PermissionAsk, err
+	}
+
+	if len(results) == 0 {
+		h.record(coreevents.Event{Type: coreevents.PermissionRequest, Payload: evt})
+		return coreevents.PermissionAsk, nil
 	}
 
 	decision := coreevents.PermissionAllow

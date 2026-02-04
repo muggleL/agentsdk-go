@@ -8,18 +8,37 @@ import (
 	"github.com/cexll/agentsdk-go/pkg/sandbox"
 )
 
+type noopFileSystemPolicy struct {
+	root string
+}
+
+func (n *noopFileSystemPolicy) Allow(string) {
+	_ = n
+}
+
+func (n *noopFileSystemPolicy) Validate(string) error { return nil }
+
+func (n *noopFileSystemPolicy) Roots() []string {
+	if n == nil || strings.TrimSpace(n.root) == "" {
+		return nil
+	}
+	return []string{n.root}
+}
+
 // buildSandboxManager wires filesystem/network/resource policies using options
 // and settings.json. Respects settings.Sandbox.Enabled to allow disabling
 // sandbox validation entirely. Defaults to enabled for backwards compatibility.
 func buildSandboxManager(opts Options, settings *config.Settings) (*sandbox.Manager, string) {
 	// Check if sandbox is explicitly disabled in settings
 	if settings != nil && settings.Sandbox != nil && settings.Sandbox.Enabled != nil && !*settings.Sandbox.Enabled {
-		// Return a pass-through sandbox manager that skips all validation
+		// Skip filesystem/network/resource validation, but keep tool permission rules
+		// functional (permissions live under settings.Permissions, not settings.Sandbox).
 		root := opts.Sandbox.Root
 		if root == "" {
 			root = opts.ProjectRoot
 		}
-		return sandbox.NewManager(nil, nil, nil), filepath.Clean(root)
+		root = filepath.Clean(root)
+		return sandbox.NewManager(&noopFileSystemPolicy{root: root}, nil, nil), root
 	}
 
 	root := opts.Sandbox.Root
