@@ -13,6 +13,7 @@ import (
 
 	"github.com/cexll/agentsdk-go/pkg/core/events"
 	"github.com/cexll/agentsdk-go/pkg/core/middleware"
+	"github.com/stretchr/testify/require"
 )
 
 func TestExecuteSerializesPayloadAndParsesOutput(t *testing.T) {
@@ -306,9 +307,9 @@ func TestEnvIsMergedIntoCommand(t *testing.T) {
 func TestBuildPayloadFlatFormat(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name    string
-		evt     events.Event
-		checks  map[string]any
+		name   string
+		evt    events.Event
+		checks map[string]any
 	}{
 		{
 			name: "ToolUsePayload",
@@ -321,7 +322,7 @@ func TestBuildPayloadFlatFormat(t *testing.T) {
 		{
 			name: "ToolResultPayload",
 			evt: events.Event{
-				Type: events.PostToolUse,
+				Type:    events.PostToolUse,
 				Payload: events.ToolResultPayload{Name: "Bash", Result: "ok", ToolUseID: "tu2"},
 			},
 			checks: map[string]any{"tool_name": "Bash", "tool_use_id": "tu2"},
@@ -353,7 +354,7 @@ func TestBuildPayloadFlatFormat(t *testing.T) {
 		{
 			name: "PreCompactPayload",
 			evt: events.Event{
-				Type: events.PreCompact,
+				Type:    events.PreCompact,
 				Payload: events.PreCompactPayload{Trigger: "auto", CustomInstructions: "keep it short"},
 			},
 			checks: map[string]any{"trigger": "auto", "custom_instructions": "keep it short"},
@@ -481,7 +482,8 @@ func TestNewExecutorZeroTimeout(t *testing.T) {
 
 func TestSelectorMatchNoToolName(t *testing.T) {
 	t.Parallel()
-	sel, _ := NewSelector("^Bash$", "")
+	sel, err := NewSelector("^Bash$", "")
+	require.NoError(t, err)
 	// Notification has no tool name — matcher target is NotificationType
 	evt := events.Event{Type: events.Notification, Payload: events.NotificationPayload{Message: "hi"}}
 	if sel.Match(evt) {
@@ -491,7 +493,8 @@ func TestSelectorMatchNoToolName(t *testing.T) {
 
 func TestSelectorPayloadPattern(t *testing.T) {
 	t.Parallel()
-	sel, _ := NewSelector("", `"command":"ls"`)
+	sel, err := NewSelector("", `"command":"ls"`)
+	require.NoError(t, err)
 	evt := events.Event{
 		Type:    events.PreToolUse,
 		Payload: events.ToolUsePayload{Name: "Bash", Params: map[string]any{"command": "ls"}},
@@ -549,7 +552,8 @@ func TestOnceHookExecutesOnlyOnce(t *testing.T) {
 			t.Fatalf("execute %d: %v", i, err)
 		}
 	}
-	data, _ := os.ReadFile(counter)
+	data, err := os.ReadFile(counter)
+	require.NoError(t, err)
 	lines := strings.Count(strings.TrimSpace(string(data)), "x")
 	if lines != 1 {
 		t.Fatalf("expected once hook to run 1 time, ran %d times", lines)
@@ -567,7 +571,7 @@ func TestBuildPayloadSessionStartEnd(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got map[string]any
-	json.Unmarshal(data, &got)
+	require.NoError(t, json.Unmarshal(data, &got))
 	if got["source"] != "cli" || got["model"] != "claude" {
 		t.Fatalf("SessionStart: %v", got)
 	}
@@ -580,7 +584,7 @@ func TestBuildPayloadSessionStartEnd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	json.Unmarshal(data, &got)
+	require.NoError(t, json.Unmarshal(data, &got))
 	if got["reason"] != "user_exit" {
 		t.Fatalf("SessionEnd: %v", got)
 	}
@@ -620,7 +624,7 @@ func TestExecuteAcceptsAllValidEvents(t *testing.T) {
 func writeScript(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte(content), 0o700); err != nil { //nolint:gosec // test helper needs executable scripts
 		t.Fatalf("writeScript: %v", err)
 	}
 	return path

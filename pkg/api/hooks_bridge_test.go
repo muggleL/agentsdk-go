@@ -20,7 +20,7 @@ func TestBuildSettingsHooksCreatesCorrectTypes(t *testing.T) {
 	settings := &config.Settings{
 		Env: map[string]string{"KEY": "value"},
 		Hooks: &config.HooksConfig{
-			PreToolUse: []config.HookMatcherEntry{{Matcher: "echo", Hooks: []config.HookDefinition{{Type: "command", Command: "echo pre"}}}},
+			PreToolUse:  []config.HookMatcherEntry{{Matcher: "echo", Hooks: []config.HookDefinition{{Type: "command", Command: "echo pre"}}}},
 			PostToolUse: []config.HookMatcherEntry{{Matcher: "grep", Hooks: []config.HookDefinition{{Type: "command", Command: "echo post"}}}},
 		},
 	}

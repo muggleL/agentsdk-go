@@ -68,12 +68,12 @@ type ToolResultPayload struct {
 
 // PreCompactPayload is emitted before automatic context compaction.
 type PreCompactPayload struct {
-	Trigger           string  `json:"trigger,omitempty"`
-	CustomInstructions string `json:"custom_instructions,omitempty"`
-	EstimatedTokens   int     `json:"estimated_tokens"`
-	TokenLimit        int     `json:"token_limit"`
-	Threshold         float64 `json:"threshold"`
-	PreserveCount     int     `json:"preserve_count"`
+	Trigger            string  `json:"trigger,omitempty"`
+	CustomInstructions string  `json:"custom_instructions,omitempty"`
+	EstimatedTokens    int     `json:"estimated_tokens"`
+	TokenLimit         int     `json:"token_limit"`
+	Threshold          float64 `json:"threshold"`
+	PreserveCount      int     `json:"preserve_count"`
 }
 
 // ContextCompactedPayload is emitted after context compaction completes.
@@ -99,16 +99,16 @@ type SessionPayload struct {
 // SessionStartPayload is emitted when a session starts.
 type SessionStartPayload struct {
 	SessionID string
-	Source    string         // entry point source (e.g., "cli", "api")
-	Model     string         // model being used
-	AgentType string         // agent type (e.g., "main", "subagent")
+	Source    string // entry point source (e.g., "cli", "api")
+	Model     string // model being used
+	AgentType string // agent type (e.g., "main", "subagent")
 	Metadata  map[string]any
 }
 
 // SessionEndPayload is emitted when a session ends.
 type SessionEndPayload struct {
 	SessionID string
-	Reason    string         // reason for ending (e.g., "user_exit", "error")
+	Reason    string // reason for ending (e.g., "user_exit", "error")
 	Metadata  map[string]any
 }
 
@@ -156,7 +156,7 @@ const (
 type NotificationPayload struct {
 	Title            string
 	Message          string
-	NotificationType string         // type of notification for matcher filtering
+	NotificationType string // type of notification for matcher filtering
 	Meta             map[string]any
 }
 

@@ -107,9 +107,9 @@ printf '{"hookSpecificOutput":{"permissionDecision":"ask"}}'
 func TestPermissionRequestDecisionMapping(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name    string
-		output  string
-		want    coreevents.PermissionDecisionType
+		name   string
+		output string
+		want   coreevents.PermissionDecisionType
 	}{
 		{name: "allow", output: `{"decision":"allow"}`, want: coreevents.PermissionAllow},
 		{name: "deny", output: `{"decision":"deny"}`, want: coreevents.PermissionDeny},

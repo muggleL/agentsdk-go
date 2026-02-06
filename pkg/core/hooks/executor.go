@@ -49,10 +49,10 @@ func (d Decision) String() string {
 
 // HookOutput is the structured JSON output from hooks on exit 0.
 type HookOutput struct {
-	Continue    *bool  `json:"continue,omitempty"`
-	StopReason  string `json:"stopReason,omitempty"`
-	Decision    string `json:"decision,omitempty"`
-	Reason      string `json:"reason,omitempty"`
+	Continue      *bool  `json:"continue,omitempty"`
+	StopReason    string `json:"stopReason,omitempty"`
+	Decision      string `json:"decision,omitempty"`
+	Reason        string `json:"reason,omitempty"`
 	SystemMessage string `json:"systemMessage,omitempty"`
 
 	HookSpecificOutput *HookSpecificOutput `json:"hookSpecificOutput,omitempty"`
