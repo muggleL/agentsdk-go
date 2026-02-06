@@ -330,7 +330,24 @@ func (rt *Runtime) RunStream(ctx context.Context, req Request) (<-chan StreamEve
 			}
 		}()
 
-		result, runErr := rt.runAgentWithMiddleware(prep, progressMW)
+		var runErr error
+		var result runResult
+		defer func() {
+			if rt.hooks != nil {
+				reason := "completed"
+				if runErr != nil {
+					reason = "error"
+				}
+				//nolint:errcheck // session end events are non-critical notifications
+				rt.hooks.Publish(coreevents.Event{
+					Type:      coreevents.SessionEnd,
+					SessionID: req.SessionID,
+					Payload:   coreevents.SessionEndPayload{SessionID: req.SessionID, Reason: reason},
+				})
+			}
+		}()
+
+		result, runErr = rt.runAgentWithMiddleware(prep, progressMW)
 		close(progressChan)
 		<-done
 

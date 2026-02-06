@@ -259,11 +259,17 @@ func (e *Executor) runHooks(ctx context.Context, evt events.Event) ([]Result, er
 
 	results := make([]Result, 0, len(hooks))
 	for _, hook := range hooks {
-		// Check Once constraint
-		if hook.Once && hook.Name != "" {
-			key := evt.SessionID + ":" + hook.Name
-			if _, loaded := e.onceTracker.LoadOrStore(key, struct{}{}); loaded {
-				continue
+		// Check Once constraint. Use hook name as key; fall back to command string.
+		if hook.Once {
+			onceKey := hook.Name
+			if onceKey == "" {
+				onceKey = hook.Command
+			}
+			if onceKey != "" {
+				key := evt.SessionID + ":" + onceKey
+				if _, loaded := e.onceTracker.LoadOrStore(key, struct{}{}); loaded {
+					continue
+				}
 			}
 		}
 
@@ -462,7 +468,11 @@ func buildPayload(evt events.Event) ([]byte, error) {
 		envelope["threshold"] = p.Threshold
 		envelope["preserve_count"] = p.PreserveCount
 	case events.ContextCompactedPayload:
-		envelope["context_compacted"] = p
+		envelope["summary"] = p.Summary
+		envelope["original_messages"] = p.OriginalMessages
+		envelope["preserved_messages"] = p.PreservedMessages
+		envelope["estimated_tokens_before"] = p.EstimatedTokensBefore
+		envelope["estimated_tokens_after"] = p.EstimatedTokensAfter
 	case events.SubagentStartPayload:
 		envelope["agent_name"] = p.Name
 		if p.AgentID != "" {
@@ -550,7 +560,11 @@ func buildPayload(evt events.Event) ([]byte, error) {
 		}
 		envelope["stop_hook_active"] = p.StopHookActive
 	case events.ModelSelectedPayload:
-		envelope["model_selected"] = p
+		envelope["tool_name"] = p.ToolName
+		envelope["model_tier"] = p.ModelTier
+		if p.Reason != "" {
+			envelope["reason"] = p.Reason
+		}
 	case nil:
 		// allowed
 	default:

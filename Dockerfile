@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-ARG GO_VERSION=1.23
+ARG GO_VERSION=1.24
 
 FROM golang:${GO_VERSION}-alpine AS builder
 RUN apk add --no-cache ca-certificates git
@@ -17,7 +17,7 @@ WORKDIR /app
 ENV TMPDIR=/var/agentsdk \
     ANTHROPIC_API_KEY="" \
     AGENTSDK_HTTP_ADDR=":8080" \
-    AGENTSDK_MODEL="claude-3-5-sonnet-20241022"
+    AGENTSDK_MODEL="claude-sonnet-4-5-20250514"
 COPY --from=builder /out/agentsdk-http /usr/local/bin/agentsdk-http
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 CMD ["sh","-c","ADDR=${AGENTSDK_HTTP_ADDR:-:8080}; PORT=${ADDR##*:}; [ -z \"$PORT\" ] && PORT=8080; wget -qO- http://127.0.0.1:${PORT}/health || exit 1"]
