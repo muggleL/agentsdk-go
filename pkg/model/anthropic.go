@@ -131,7 +131,11 @@ func NewAnthropic(cfg AnthropicConfig) (Model, error) {
 		return nil, errors.New("anthropic: api key required")
 	}
 
-	opts := []option.RequestOption{}
+	opts := []option.RequestOption{
+		// Explicitly set the API key so it overrides any ANTHROPIC_AUTH_TOKEN
+		// or ANTHROPIC_API_KEY from the environment (DefaultClientOptions).
+		option.WithAPIKey(apiKey),
+	}
 	if cfg.BaseURL != "" {
 		opts = append(opts, option.WithBaseURL(cfg.BaseURL))
 	}

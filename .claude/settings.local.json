@@ -10,7 +10,8 @@
       "Bash(go tool cover:*)",
       "Bash(gh issue create:*)",
       "Bash(gh label list:*)",
-      "Bash(codeagent-wrapper --backend codex -:*)"
+      "Bash(codeagent-wrapper --backend codex -:*)",
+      "WebFetch(domain:docs.anthropic.com)"
     ],
     "deny": [],
     "ask": []
