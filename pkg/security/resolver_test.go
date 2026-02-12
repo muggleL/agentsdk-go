@@ -155,9 +155,6 @@ func mustHardlink(t *testing.T, oldname, newname string) {
 }
 
 func TestOpenNoFollowMissingPath(t *testing.T) {
-	if !supportsNoFollow() {
-		t.Skip("O_NOFOLLOW unsupported on this platform")
-	}
 	missing := filepath.Join(t.TempDir(), "missing.txt")
 	if err := openNoFollow(missing); err == nil || !strings.Contains(err.Error(), "open failed") {
 		t.Fatalf("expected missing path error, got %v", err)
